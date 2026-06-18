@@ -1,0 +1,10 @@
+# Build artifacts
+/bin/
+/obj/
+
+# Local reference material, not part of the project
+/.references/
+
+# Editor / OS cruft
+.DS_Store
+*.swp
