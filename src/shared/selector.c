@@ -41,6 +41,9 @@ selector_error(const selector_status status) {
         case SELECTOR_IO:
             msg = "I/O error";
             break;
+        case SELECTOR_FDINUSE:
+            msg = "File descriptor already in use";
+            break;
         default:
             msg = ERROR_DEFAULT_MSG;
     }
@@ -50,6 +53,7 @@ selector_error(const selector_status status) {
 
 static void
 wake_handler(const int signal) {
+    (void)signal;
     // nada que hacer. está solo para interrumpir el select
 }
 
@@ -222,17 +226,20 @@ items_max_fd(fd_selector s) {
 
 static void
 items_update_fdset_for_fd(fd_selector s, const struct item * item) {
+    // un item sin usar tiene fd == FD_UNUSED (-1); evitar FD_CLR(-1, ...)
+    if(!ITEM_USED(item)) {
+        return;
+    }
+
     FD_CLR(item->fd, &s->master_r);
     FD_CLR(item->fd, &s->master_w);
 
-    if(ITEM_USED(item)) {
-        if(item->interest & OP_READ) {
-            FD_SET(item->fd, &(s->master_r));
-        }
+    if(item->interest & OP_READ) {
+        FD_SET(item->fd, &(s->master_r));
+    }
 
-        if(item->interest & OP_WRITE) {
-            FD_SET(item->fd, &(s->master_w));
-        }
+    if(item->interest & OP_WRITE) {
+        FD_SET(item->fd, &(s->master_w));
     }
 }
 
@@ -552,8 +559,8 @@ selector_select(fd_selector s) {
                 break;
             case EBADF:
                 // ayuda a encontrar casos donde se cierran los fd pero no
-                // se desregistraron
-                for(int i = 0 ; i < s->max_fd; i++) {
+                // se desregistraron (incluye max_fd, de ahí el <=)
+                for(int i = 0 ; i <= s->max_fd; i++) {
                     if(FD_ISSET(i, &s->master_r)|| FD_ISSET(i, &s->master_w)) {
                         if(-1 == fcntl(i, F_GETFD, 0)) {
                             fprintf(stderr, "Bad descriptor detected: %d\n", i);

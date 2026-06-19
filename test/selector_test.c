@@ -13,6 +13,7 @@ START_TEST (test_selector_error) {
         SELECTOR_MAXFD,
         SELECTOR_IARGS,
         SELECTOR_IO,
+        SELECTOR_FDINUSE,
     };
     // verifica que `selector_error' tiene mensajes especificos
     for(unsigned i = 0 ; i < N(data); i++) {
