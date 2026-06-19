@@ -172,6 +172,42 @@ START_TEST(test_active_connections_lifecycle)
 }
 END_TEST
 
+/* send() devolviendo 0 (sin progreso) no debe dejar la conexión girando en
+ * OP_WRITE: hay que cerrarla. Se fuerza el caso con un buffer vacío, donde
+ * send(fd, ptr, 0, ...) devuelve 0. */
+START_TEST(test_write_no_progress_closes_connection)
+{
+    struct selector_init conf = {
+        .signal         = SIGALRM,
+        .select_timeout = { .tv_sec = 0, .tv_nsec = 100000000 },
+    };
+    ck_assert_int_eq(selector_init(&conf), SELECTOR_SUCCESS);
+    fd_selector s = selector_new(64);
+    ck_assert_ptr_nonnull(s);
+
+    int sv[2];
+    ck_assert_int_eq(socketpair(AF_UNIX, SOCK_STREAM, 0, sv), 0);
+    ck_assert_int_ge(selector_fd_set_nio(sv[0]), 0);
+
+    struct echo_conn *conn = malloc(sizeof(*conn));
+    ck_assert_ptr_nonnull(conn);
+    buffer_init(&conn->buffer, sizeof(conn->raw), conn->raw); /* buffer vacío */
+    ck_assert_int_eq(selector_register(s, sv[0], &echo_handler, OP_WRITE, conn),
+                     SELECTOR_SUCCESS);
+    active_connections++; /* simula la contabilidad del accept */
+
+    struct selector_key key = { .s = s, .fd = sv[0], .data = conn };
+    echo_write(&key);
+
+    /* la conexión debe haber quedado cerrada (desregistrada) */
+    ck_assert_int_eq(selector_unregister_fd(s, sv[0]), SELECTOR_IARGS);
+
+    close(sv[1]);
+    selector_destroy(s);
+    selector_close();
+}
+END_TEST
+
 static Suite *
 echo_suite(void)
 {
@@ -180,6 +216,7 @@ echo_suite(void)
     tcase_add_test(tc, test_echo_returns_what_was_sent);
     tcase_add_test(tc, test_read_eagain_keeps_connection);
     tcase_add_test(tc, test_active_connections_lifecycle);
+    tcase_add_test(tc, test_write_no_progress_closes_connection);
     suite_add_tcase(s, tc);
     return s;
 }

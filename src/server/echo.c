@@ -69,11 +69,13 @@ echo_write(struct selector_key *key)
     uint8_t *ptr = buffer_read_ptr(&conn->buffer, &pending);
     ssize_t  n   = send(key->fd, ptr, pending, MSG_NOSIGNAL);
 
-    if (n < 0) {
+    if (n <= 0) {
         /* buffer de envío lleno: mantener OP_WRITE y reintentar luego. */
-        if (would_block(errno)) {
+        if (n < 0 && would_block(errno)) {
             return;
         }
+        /* error real, o un send sin progreso (n == 0): cerrar para no girar
+         * indefinidamente en OP_WRITE con un selector level-triggered. */
         selector_unregister_fd(key->s, key->fd);
         return;
     }
