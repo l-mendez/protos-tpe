@@ -87,19 +87,19 @@ jobs:
 
       - name: Build all
         if: steps.changes.outputs.full == 'true'
-        run: make
+        run: make EXTRA_CFLAGS=-Werror
 
       - name: Build server
         if: steps.changes.outputs.full != 'true' && steps.changes.outputs.server == 'true'
-        run: make server
+        run: make server EXTRA_CFLAGS=-Werror
 
       - name: Build client
         if: steps.changes.outputs.full != 'true' && steps.changes.outputs.client == 'true'
-        run: make client
+        run: make client EXTRA_CFLAGS=-Werror
 
       - name: Run tests
         if: steps.changes.outputs.code == 'true'
-        run: make test
+        run: make test EXTRA_CFLAGS=-Werror
 
       - name: Static analysis
         if: steps.changes.outputs.c_headers == 'true'

@@ -16,7 +16,9 @@ else
 FEATURE_FLAGS=-D_POSIX_C_SOURCE=200809L
 endif
 
-COMPILER_FLAGS=$(STD_FLAGS) $(FEATURE_FLAGS) $(WARN_FLAGS) $(INCLUDE_FLAGS) -g
+# EXTRA_CFLAGS is an appendable hook so callers can tighten the build without
+# editing this file; CI passes -Werror through it to fail on any warning.
+COMPILER_FLAGS=$(STD_FLAGS) $(FEATURE_FLAGS) $(WARN_FLAGS) $(INCLUDE_FLAGS) -g $(EXTRA_CFLAGS)
 LD_FLAGS=-pthread
 
 # Unit tests are written against the Check framework (libcheck.github.io/check).
