@@ -1,4 +1,5 @@
 #include <arpa/inet.h>
+#include <fcntl.h>
 #include <netinet/in.h>
 #include <pthread.h>
 #include <signal.h>
@@ -90,12 +91,49 @@ START_TEST(test_echo_returns_what_was_sent)
 }
 END_TEST
 
+/* Una lectura sobre un socket no bloqueante sin datos disponibles devuelve
+ * EAGAIN; eso no es una desconexión y la conexión debe seguir registrada. */
+START_TEST(test_read_eagain_keeps_connection)
+{
+    struct selector_init conf = {
+        .signal         = SIGALRM,
+        .select_timeout = { .tv_sec = 0, .tv_nsec = 100000000 },
+    };
+    ck_assert_int_eq(selector_init(&conf), SELECTOR_SUCCESS);
+    fd_selector s = selector_new(64);
+    ck_assert_ptr_nonnull(s);
+
+    int sv[2];
+    ck_assert_int_eq(socketpair(AF_UNIX, SOCK_STREAM, 0, sv), 0);
+    ck_assert_int_ge(selector_fd_set_nio(sv[0]), 0);
+
+    struct echo_conn *conn = malloc(sizeof(*conn));
+    ck_assert_ptr_nonnull(conn);
+    buffer_init(&conn->buffer, sizeof(conn->raw), conn->raw);
+    ck_assert_int_eq(selector_register(s, sv[0], &echo_handler, OP_READ, conn),
+                     SELECTOR_SUCCESS);
+
+    /* nada escrito en sv[1] -> recv en sv[0] da EAGAIN */
+    struct selector_key key = { .s = s, .fd = sv[0], .data = conn };
+    echo_read(&key);
+
+    /* si la conexión sobrevivió sigue registrada: desregistrarla ahora debe
+     * tener éxito (si echo_read la hubiera cerrado, daría SELECTOR_IARGS). */
+    ck_assert_int_eq(selector_unregister_fd(s, sv[0]), SELECTOR_SUCCESS);
+
+    close(sv[1]);
+    selector_destroy(s);
+    selector_close();
+}
+END_TEST
+
 static Suite *
 echo_suite(void)
 {
     Suite *s   = suite_create("echo");
     TCase *tc  = tcase_create("roundtrip");
     tcase_add_test(tc, test_echo_returns_what_was_sent);
+    tcase_add_test(tc, test_read_eagain_keeps_connection);
     suite_add_tcase(s, tc);
     return s;
 }

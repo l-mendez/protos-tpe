@@ -42,7 +42,12 @@ obj/%.o: src/%.c
 $(SHARED_LIB): $(SHARED_OBJECTS)
 	$(AR) rcs $@ $^
 
-$(BIN)/test/%: test/%.c $(SHARED_LIB)
+# Some tests #include a server/shared unit directly to reach its statics. Make
+# can't see those includes, so depend on every source and header to rebuild the
+# test binaries whenever an included unit changes (avoids running stale tests).
+TEST_DEPS=$(wildcard src/server/*.c src/server/*.h src/shared/*.h)
+
+$(BIN)/test/%: test/%.c $(SHARED_LIB) $(TEST_DEPS)
 	@mkdir -p $(@D)
 	$(COMPILER) $(COMPILER_FLAGS) $(TEST_CFLAGS) $< $(SHARED_LIB) -o $@ $(TEST_LD_FLAGS)
 

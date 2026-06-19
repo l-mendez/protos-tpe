@@ -1,3 +1,4 @@
+#include <errno.h>
 #include <stdlib.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -12,6 +13,14 @@
 #ifndef MSG_NOSIGNAL
 #define MSG_NOSIGNAL 0
 #endif
+
+/* En un socket no bloqueante, recv/send pueden devolver -1 con uno de estos
+ * errno: no es un fallo de la conexión, hay que reintentar más tarde. */
+static inline int
+would_block(int err)
+{
+    return err == EAGAIN || err == EWOULDBLOCK || err == EINTR;
+}
 
 /** Estado por conexión: un único buffer por el que se streamea lo recibido. */
 struct echo_conn {
@@ -28,13 +37,18 @@ echo_read(struct selector_key *key)
     uint8_t *ptr = buffer_write_ptr(&conn->buffer, &space);
     ssize_t  n   = recv(key->fd, ptr, space, 0);
 
-    if (n <= 0) {
-        selector_unregister_fd(key->s, key->fd);
+    if (n > 0) {
+        buffer_write_adv(&conn->buffer, n);
+        selector_set_interest_key(key, OP_WRITE);
         return;
     }
 
-    buffer_write_adv(&conn->buffer, n);
-    selector_set_interest_key(key, OP_WRITE);
+    /* n < 0 con would_block: reintentar luego, sin tocar la conexión.
+     * n == 0 (cierre ordenado del par) o error real: desregistrar. */
+    if (n < 0 && would_block(errno)) {
+        return;
+    }
+    selector_unregister_fd(key->s, key->fd);
 }
 
 static void
@@ -47,6 +61,10 @@ echo_write(struct selector_key *key)
     ssize_t  n   = send(key->fd, ptr, pending, MSG_NOSIGNAL);
 
     if (n < 0) {
+        /* buffer de envío lleno: mantener OP_WRITE y reintentar luego. */
+        if (would_block(errno)) {
+            return;
+        }
         selector_unregister_fd(key->s, key->fd);
         return;
     }
