@@ -30,7 +30,9 @@ server_setup_passive(const char *addr, unsigned short port)
             continue;
         }
 
-        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &(int){ 1 }, sizeof(int));
+        /* SO_REUSEADDR es deseable pero no crítico: si falla, igual se intenta
+         * el bind, así que se descarta el resultado a propósito. */
+        (void)setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &(int){ 1 }, sizeof(int));
 
         if (bind(fd, rp->ai_addr, rp->ai_addrlen) == 0 && listen(fd, 20) == 0) {
             break;
