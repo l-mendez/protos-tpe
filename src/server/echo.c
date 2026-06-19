@@ -28,6 +28,15 @@ struct echo_conn {
     uint8_t       raw[ECHO_BUFFER_SIZE];
 };
 
+/* Cantidad de conexiones echo vivas; permite drenar en el apagado ordenado. */
+static size_t active_connections = 0;
+
+size_t
+echo_active_connections(void)
+{
+    return active_connections;
+}
+
 static void
 echo_read(struct selector_key *key)
 {
@@ -80,6 +89,7 @@ echo_close(struct selector_key *key)
 {
     free(key->data);
     close(key->fd);
+    active_connections--;
 }
 
 static const fd_handler echo_handler = {
@@ -114,5 +124,7 @@ echo_passive_accept(struct selector_key *key)
     if (selector_register(key->s, client, &echo_handler, OP_READ, conn) != SELECTOR_SUCCESS) {
         free(conn);
         close(client);
+        return;
     }
+    active_connections++;
 }

@@ -1,4 +1,5 @@
 #include <signal.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <unistd.h>
 
@@ -9,13 +10,27 @@
 
 #define MAX_CONNECTIONS 1024
 
+/* Cuenta las señales de terminación: la primera inicia el apagado ordenado
+ * (deja de aceptar y drena), una segunda fuerza la salida inmediata. */
 static volatile sig_atomic_t terminate = 0;
 
 static void
 signal_handler(const int signal)
 {
     (void)signal;
-    terminate = 1;
+    terminate++;
+}
+
+static void
+install_signal_handlers(void)
+{
+    /* Sin SA_RESTART para que la señal interrumpa el pselect del selector y el
+     * loop reaccione de inmediato (pselect, además, nunca se reinicia). */
+    struct sigaction sa = { .sa_handler = signal_handler };
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;
+    sigaction(SIGTERM, &sa, NULL);
+    sigaction(SIGINT, &sa, NULL);
 }
 
 int
@@ -26,8 +41,7 @@ main(const int argc, char **argv)
 
     /* Las escrituras a sockets cerrados no deben matar al proceso. */
     signal(SIGPIPE, SIG_IGN);
-    signal(SIGTERM, signal_handler);
-    signal(SIGINT, signal_handler);
+    install_signal_handlers();
 
     int          ret      = 1;
     const char  *err      = NULL;
@@ -66,10 +80,28 @@ main(const int argc, char **argv)
 
     printf("echo escuchando en %s:%hu\n", args.socks_addr, args.socks_port);
 
-    while (!terminate) {
+    bool accepting = true;
+    while (true) {
         if (selector_select(selector) != SELECTOR_SUCCESS) {
             err = "fallo en selector_select";
             goto finally;
+        }
+
+        if (terminate) {
+            if (accepting) {
+                /* Apagado ordenado: dejar de aceptar nuevas conexiones y
+                 * drenar las que siguen vivas. */
+                selector_unregister_fd(selector, passive);
+                close(passive);
+                passive    = -1;
+                accepting  = false;
+                printf("apagando: drenando %zu conexion(es)\n",
+                       echo_active_connections());
+            }
+            /* Salir cuando no quedan conexiones, o si llega una segunda señal. */
+            if (echo_active_connections() == 0 || terminate > 1) {
+                break;
+            }
         }
     }
     ret = 0;

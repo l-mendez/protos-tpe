@@ -76,11 +76,18 @@ START_TEST(test_echo_returns_what_was_sent)
 
     int         client = connect_to(port);
     const char *msg    = "hola mundo";
-    ck_assert_int_eq(write(client, msg, strlen(msg)), (ssize_t)strlen(msg));
+    size_t      len    = strlen(msg);
+    ck_assert_int_eq(write(client, msg, len), (ssize_t)len);
 
-    char    buf[64] = { 0 };
-    ssize_t got     = read(client, buf, sizeof(buf));
-    ck_assert_int_eq(got, (ssize_t)strlen(msg));
+    /* el echo puede llegar en varios segmentos: acumular hasta tenerlo entero */
+    char   buf[64] = { 0 };
+    size_t got     = 0;
+    while (got < len) {
+        ssize_t r = read(client, buf + got, sizeof(buf) - got);
+        ck_assert_int_gt(r, 0);
+        got += (size_t)r;
+    }
+    ck_assert_uint_eq(got, len);
     ck_assert_str_eq(buf, msg);
 
     test_stop = 1;
@@ -112,6 +119,7 @@ START_TEST(test_read_eagain_keeps_connection)
     buffer_init(&conn->buffer, sizeof(conn->raw), conn->raw);
     ck_assert_int_eq(selector_register(s, sv[0], &echo_handler, OP_READ, conn),
                      SELECTOR_SUCCESS);
+    active_connections++; /* simula la contabilidad que hace echo_passive_accept */
 
     /* nada escrito en sv[1] -> recv en sv[0] da EAGAIN */
     struct selector_key key = { .s = s, .fd = sv[0], .data = conn };
@@ -127,6 +135,43 @@ START_TEST(test_read_eagain_keeps_connection)
 }
 END_TEST
 
+/* El contador de conexiones (base del drenado en el apagado) sube al aceptar
+ * y baja al cerrar. */
+START_TEST(test_active_connections_lifecycle)
+{
+    struct selector_init conf = {
+        .signal         = SIGALRM,
+        .select_timeout = { .tv_sec = 0, .tv_nsec = 100000000 },
+    };
+    ck_assert_int_eq(selector_init(&conf), SELECTOR_SUCCESS);
+    fd_selector s = selector_new(64);
+    ck_assert_ptr_nonnull(s);
+
+    int passive = server_setup_passive("127.0.0.1", 0);
+    ck_assert_int_ge(passive, 0);
+    struct sockaddr_in bound;
+    socklen_t          bound_len = sizeof(bound);
+    ck_assert_int_eq(getsockname(passive, (struct sockaddr *)&bound, &bound_len), 0);
+
+    size_t before = echo_active_connections();
+
+    /* conexión pendiente en el backlog para que el accept tenga qué tomar */
+    int client = connect_to(ntohs(bound.sin_port));
+
+    struct selector_key key = { .s = s, .fd = passive, .data = NULL };
+    echo_passive_accept(&key);
+    ck_assert_uint_eq(echo_active_connections(), before + 1);
+
+    /* destruir el selector desregistra la conexión -> echo_close la descuenta */
+    selector_destroy(s);
+    ck_assert_uint_eq(echo_active_connections(), before);
+
+    selector_close();
+    close(client);
+    close(passive);
+}
+END_TEST
+
 static Suite *
 echo_suite(void)
 {
@@ -134,6 +179,7 @@ echo_suite(void)
     TCase *tc  = tcase_create("roundtrip");
     tcase_add_test(tc, test_echo_returns_what_was_sent);
     tcase_add_test(tc, test_read_eagain_keeps_connection);
+    tcase_add_test(tc, test_active_connections_lifecycle);
     suite_add_tcase(s, tc);
     return s;
 }
