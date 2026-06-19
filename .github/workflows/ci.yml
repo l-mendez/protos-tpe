@@ -1,0 +1,106 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+
+jobs:
+  build-test-analyze:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y check cppcheck pkg-config
+
+      - name: Classify changes
+        id: changes
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            base="${{ github.event.pull_request.base.sha }}"
+            head="${{ github.event.pull_request.head.sha }}"
+          else
+            base="${{ github.event.before }}"
+            head="${{ github.sha }}"
+            if [[ "$base" =~ ^0+$ ]]; then
+              base="$(git hash-object -t tree /dev/null)"
+            fi
+          fi
+
+          mapfile -t files < <(git diff --name-only "$base" "$head")
+
+          code=false
+          c_headers=false
+          server=false
+          client=false
+          full=false
+
+          for file in "${files[@]}"; do
+            case "$file" in
+              *.c|*.h|Makefile|Makefile.*|test/*)
+                code=true
+                ;;
+            esac
+
+            case "$file" in
+              *.c|*.h)
+                c_headers=true
+                ;;
+            esac
+
+            case "$file" in
+              src/server/*)
+                server=true
+                ;;
+              src/client/*)
+                client=true
+                ;;
+              src/shared/*|test/*|Makefile|Makefile.*)
+                full=true
+                ;;
+              *.c|*.h)
+                full=true
+                ;;
+            esac
+          done
+
+          if [[ "$server" == true && "$client" == true ]]; then
+            full=true
+          fi
+
+          {
+            echo "code=$code"
+            echo "c_headers=$c_headers"
+            echo "server=$server"
+            echo "client=$client"
+            echo "full=$full"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build all
+        if: steps.changes.outputs.full == 'true'
+        run: make
+
+      - name: Build server
+        if: steps.changes.outputs.full != 'true' && steps.changes.outputs.server == 'true'
+        run: make server
+
+      - name: Build client
+        if: steps.changes.outputs.full != 'true' && steps.changes.outputs.client == 'true'
+        run: make client
+
+      - name: Run tests
+        if: steps.changes.outputs.code == 'true'
+        run: make test
+
+      - name: Static analysis
+        if: steps.changes.outputs.c_headers == 'true'
+        run: cppcheck --enable=warning,performance,portability --std=c11 --error-exitcode=1 -Isrc/shared --suppress=missingIncludeSystem src test
