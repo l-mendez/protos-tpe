@@ -95,6 +95,7 @@ START_TEST(test_echo_returns_what_was_sent)
     close(client);
     selector_destroy(test_selector);
     selector_close();
+    close(passive);
 }
 END_TEST
 
