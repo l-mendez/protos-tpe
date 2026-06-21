@@ -18,10 +18,14 @@
 #include "../src/server/server.c"
 #include "../src/server/negotiation.c"
 #include "../src/server/request.c"
+#include "../src/server/auth.c"
 #include "../src/server/socks5.c"
 
 static fd_selector           test_selector;
 static volatile sig_atomic_t test_stop;
+
+/* No users configured: the default policy for the no-auth tests. */
+static const struct socks5args no_users = { 0 };
 
 static void *run_selector(void *unused)
 {
@@ -155,6 +159,99 @@ START_TEST(test_socks5_bad_version_closes)
 }
 END_TEST
 
+/* With users configured, a client that authenticates with valid credentials
+ * gets AUTH status 0x00 and advances to the request; the request then drives the
+ * connection to completion (server closes -> EOF). */
+START_TEST(test_socks5_userpass_valid_advances)
+{
+    static const struct socks5args args = { .users = { { .name = "alice", .pass = "secret" } } };
+    socks5_set_users(&args);
+
+    int            passive;
+    unsigned short port = start_server(&passive);
+
+    test_stop = 0;
+    pthread_t loop;
+    ck_assert_int_eq(pthread_create(&loop, NULL, run_selector, NULL), 0);
+
+    int client = connect_to(port);
+
+    /* negotiation offering user/pass (0x02); auth is required -> server picks it */
+    uint8_t neg[] = { 0x05, 0x01, 0x02 };
+    ck_assert_int_eq(write(client, neg, sizeof(neg)), (ssize_t)sizeof(neg));
+    uint8_t neg_reply[2];
+    read_exactly(client, neg_reply, sizeof(neg_reply));
+    ck_assert_uint_eq(0x05, neg_reply[0]);
+    ck_assert_uint_eq(0x02, neg_reply[1]);
+
+    /* RFC 1929 auth: VER=1, ULEN=5 "alice", PLEN=6 "secret" */
+    uint8_t auth[] = { 0x01, 0x05, 'a','l','i','c','e', 0x06, 's','e','c','r','e','t' };
+    ck_assert_int_eq(write(client, auth, sizeof(auth)), (ssize_t)sizeof(auth));
+    uint8_t auth_reply[2];
+    read_exactly(client, auth_reply, sizeof(auth_reply));
+    ck_assert_uint_eq(0x01, auth_reply[0]);
+    ck_assert_uint_eq(0x00, auth_reply[1]); /* success */
+
+    /* request: IPv4 CONNECT 127.0.0.1:80 -> server parks in DONE and closes */
+    uint8_t req[] = { 0x05, 0x01, 0x00, 0x01, 127, 0, 0, 1, 0x00, 0x50 };
+    ck_assert_int_eq(write(client, req, sizeof(req)), (ssize_t)sizeof(req));
+    uint8_t scratch[8];
+    ck_assert_int_eq(read(client, scratch, sizeof(scratch)), 0);
+
+    test_stop = 1;
+    pthread_join(loop, NULL);
+    close(client);
+    selector_destroy(test_selector);
+    selector_close();
+    close(passive);
+    socks5_set_users(&no_users);
+}
+END_TEST
+
+/* Invalid credentials get AUTH status 0x01 and the connection is closed (RFC
+ * 1929) without ever reaching the request phase. */
+START_TEST(test_socks5_userpass_invalid_rejected)
+{
+    static const struct socks5args args = { .users = { { .name = "alice", .pass = "secret" } } };
+    socks5_set_users(&args);
+
+    int            passive;
+    unsigned short port = start_server(&passive);
+
+    test_stop = 0;
+    pthread_t loop;
+    ck_assert_int_eq(pthread_create(&loop, NULL, run_selector, NULL), 0);
+
+    int client = connect_to(port);
+
+    uint8_t neg[] = { 0x05, 0x01, 0x02 };
+    ck_assert_int_eq(write(client, neg, sizeof(neg)), (ssize_t)sizeof(neg));
+    uint8_t neg_reply[2];
+    read_exactly(client, neg_reply, sizeof(neg_reply));
+    ck_assert_uint_eq(0x02, neg_reply[1]);
+
+    /* wrong password */
+    uint8_t auth[] = { 0x01, 0x05, 'a','l','i','c','e', 0x03, 'b','a','d' };
+    ck_assert_int_eq(write(client, auth, sizeof(auth)), (ssize_t)sizeof(auth));
+    uint8_t auth_reply[2];
+    read_exactly(client, auth_reply, sizeof(auth_reply));
+    ck_assert_uint_eq(0x01, auth_reply[0]);
+    ck_assert_uint_eq(0x01, auth_reply[1]); /* failure */
+
+    /* server must close after rejecting -> EOF */
+    uint8_t scratch[8];
+    ck_assert_int_eq(read(client, scratch, sizeof(scratch)), 0);
+
+    test_stop = 1;
+    pthread_join(loop, NULL);
+    close(client);
+    selector_destroy(test_selector);
+    selector_close();
+    close(passive);
+    socks5_set_users(&no_users);
+}
+END_TEST
+
 static Suite *socks5_suite(void)
 {
     Suite *s  = suite_create("socks5");
@@ -162,6 +259,8 @@ static Suite *socks5_suite(void)
     tcase_set_timeout(tc, 10);
     tcase_add_test(tc, test_socks5_negotiation_then_request);
     tcase_add_test(tc, test_socks5_bad_version_closes);
+    tcase_add_test(tc, test_socks5_userpass_valid_advances);
+    tcase_add_test(tc, test_socks5_userpass_invalid_rejected);
     suite_add_tcase(s, tc);
     return s;
 }

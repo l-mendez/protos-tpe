@@ -3,6 +3,7 @@
 
 #include <stddef.h>
 
+#include "args.h"
 #include "selector.h"
 
 /**
@@ -22,6 +23,14 @@
  */
 void
 socks5_passive_accept(struct selector_key *key);
+
+/**
+ * Registra los usuarios configurados (-u user:pass) contra los que se validan
+ * las credenciales durante la autenticación user/pass (RFC 1929). El arreglo
+ * apuntado debe sobrevivir a todas las conexiones (vive en main()).
+ */
+void
+socks5_set_users(const struct socks5args *args);
 
 /** Cantidad de conexiones SOCKS5 actualmente registradas (para drenar al apagar). */
 size_t

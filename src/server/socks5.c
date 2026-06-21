@@ -6,6 +6,8 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include "args.h"
+#include "auth.h"
 #include "buffer.h"
 #include "negotiation.h"
 #include "request.h"
@@ -32,6 +34,8 @@ static inline int would_block(int err)
 enum socks5_state {
     NEG_READ = 0, /* leyendo/parseando la negociación de métodos */
     NEG_WRITE,    /* escribiendo la respuesta de método (2 bytes) */
+    AUTH_READ,    /* leyendo/parseando las credenciales user/pass (RFC 1929) */
+    AUTH_WRITE,   /* escribiendo la respuesta de auth (2 bytes) */
     REQ_READ,     /* leyendo/parseando el request */
     DONE,         /* terminal: request parseado (placeholder de esta ronda) */
     ERROR,        /* terminal: error de protocolo o de I/O */
@@ -42,7 +46,11 @@ struct socks5_conn {
     struct state_machine stm;
 
     struct negotiation_parser neg;
+    struct socks5_auth        auth;
     struct socks5_request     request;
+
+    uint8_t method;      /* método elegido en la negociación */
+    uint8_t auth_status; /* resultado de auth, a enviar en AUTH_WRITE */
 
     struct buffer read_buffer;
     struct buffer write_buffer;
@@ -51,6 +59,37 @@ struct socks5_conn {
 };
 
 static size_t active_connections = 0;
+
+/* Usuarios configurados por línea de comandos (-u user:pass). Apuntan al arreglo
+ * de `struct socks5args`, que vive durante toda la ejecución en main(). */
+static const struct users *configured_users = NULL;
+
+void socks5_set_users(const struct socks5args *args)
+{
+    configured_users = args->users;
+}
+
+/* true si hay al menos un usuario configurado: en ese caso la autenticación
+ * user/pass es obligatoria durante la negociación. */
+static bool auth_required(void)
+{
+    return configured_users != NULL && configured_users[0].name != NULL;
+}
+
+/* Valida user/pass contra los usuarios configurados. El arreglo está terminado
+ * por un name == NULL (o llega a MAX_USERS): no hay contador explícito. */
+static bool credentials_match(const char *user, const char *pass)
+{
+    if (configured_users == NULL) {
+        return false;
+    }
+    for (int i = 0; i < MAX_USERS && configured_users[i].name != NULL; i++) {
+        if (strcmp(configured_users[i].name, user) == 0) {
+            return strcmp(configured_users[i].pass, pass) == 0;
+        }
+    }
+    return false;
+}
 
 size_t socks5_active_connections(void)
 {
@@ -102,7 +141,7 @@ static unsigned negotiation_read(struct selector_key *key)
         return NEG_READ; /* lectura parcial: esperar más datos */
     }
 
-    fill_negotiation_reply(&c->neg, &c->write_buffer);
+    c->method = fill_negotiation_reply(&c->neg, &c->write_buffer, auth_required());
     if (selector_set_interest_key(key, OP_WRITE) != SELECTOR_SUCCESS) {
         return ERROR;
     }
@@ -124,11 +163,76 @@ static unsigned negotiation_write(struct selector_key *key)
     if (buffer_can_read(&c->write_buffer)) {
         return NEG_WRITE; /* escritura parcial: falta vaciar el buffer */
     }
+    /* RFC 1928: si ningún método ofrecido es aceptable se respondió 0xFF y hay
+     * que cerrar la conexión (ya se envió el rechazo arriba). */
+    if (c->method == SOCKS5_METHOD_NONE) {
+        return ERROR;
+    }
     if (selector_set_interest_key(key, OP_READ) != SELECTOR_SUCCESS) {
         return ERROR;
     }
-    /* Auth (RFC 1929) se intercala acá en una ronda futura cuando el método
-     * negociado sea user/pass. Por ahora siempre pasamos al request. */
+    /* Si se negoció user/pass, hay que autenticar antes del request; si se
+     * negoció no-auth, se salta directo al request. */
+    return (c->method == SOCKS5_METHOD_USERPASS) ? AUTH_READ : REQ_READ;
+}
+
+/* --------------------------------------------------------------- auth phase */
+
+static void auth_read_init(const unsigned state, struct selector_key *key)
+{
+    (void)state;
+    struct socks5_conn *c = key->data;
+    auth_parser_init(&c->auth);
+}
+
+static unsigned auth_read(struct selector_key *key)
+{
+    struct socks5_conn *c = key->data;
+
+    int closed = fill_read_buffer(key, &c->read_buffer);
+    if (closed != -1) {
+        return (unsigned)closed;
+    }
+
+    auth_state st = auth_parser_feed(&c->auth, &c->read_buffer);
+    if (st == AUTH_ERROR) {
+        return ERROR;
+    }
+    if (st != AUTH_DONE) {
+        return AUTH_READ; /* lectura parcial: esperar más datos */
+    }
+
+    bool ok = credentials_match((const char *)c->auth.uname, (const char *)c->auth.passwd);
+    c->auth_status = ok ? SOCKS5_AUTH_OK : SOCKS5_AUTH_FAIL;
+    fill_auth_reply(&c->write_buffer, c->auth_status);
+    if (selector_set_interest_key(key, OP_WRITE) != SELECTOR_SUCCESS) {
+        return ERROR;
+    }
+    return AUTH_WRITE;
+}
+
+static unsigned auth_write(struct selector_key *key)
+{
+    struct socks5_conn *c = key->data;
+
+    size_t   pending;
+    uint8_t *ptr = buffer_read_ptr(&c->write_buffer, &pending);
+    ssize_t  n   = send(key->fd, ptr, pending, MSG_NOSIGNAL);
+    if (n <= 0) {
+        return (n < 0 && would_block(errno)) ? AUTH_WRITE : ERROR;
+    }
+    buffer_read_adv(&c->write_buffer, n);
+
+    if (buffer_can_read(&c->write_buffer)) {
+        return AUTH_WRITE; /* escritura parcial: falta vaciar el buffer */
+    }
+    /* RFC 1929: ante credenciales inválidas hay que cerrar la conexión. */
+    if (c->auth_status != SOCKS5_AUTH_OK) {
+        return ERROR;
+    }
+    if (selector_set_interest_key(key, OP_READ) != SELECTOR_SUCCESS) {
+        return ERROR;
+    }
     return REQ_READ;
 }
 
@@ -188,6 +292,15 @@ static const struct state_definition socks5_states[] = {
     {
         .state          = NEG_WRITE,
         .on_write_ready = negotiation_write,
+    },
+    {
+        .state         = AUTH_READ,
+        .on_arrival    = auth_read_init,
+        .on_read_ready = auth_read,
+    },
+    {
+        .state          = AUTH_WRITE,
+        .on_write_ready = auth_write,
     },
     {
         .state         = REQ_READ,

@@ -114,7 +114,8 @@ START_TEST(test_neg_reply_prefers_userpass)
     uint8_t outraw[8];
     buffer  out;
     buffer_init(&out, N(outraw), outraw);
-    uint8_t chosen = fill_negotiation_reply(&p, &out);
+    /* auth obligatoria (hay usuarios) y se ofreció user/pass -> se elige 0x02. */
+    uint8_t chosen = fill_negotiation_reply(&p, &out, true);
 
     ck_assert_uint_eq(0x02, chosen);
     ck_assert_uint_eq(0x05, buffer_read(&out));
@@ -135,7 +136,8 @@ START_TEST(test_neg_reply_falls_back_to_noauth)
     uint8_t outraw[8];
     buffer  out;
     buffer_init(&out, N(outraw), outraw);
-    uint8_t chosen = fill_negotiation_reply(&p, &out);
+    /* sin usuarios configurados (auth no requerida) se acepta no-auth. */
+    uint8_t chosen = fill_negotiation_reply(&p, &out, false);
 
     ck_assert_uint_eq(0x00, chosen);
     ck_assert_uint_eq(0x05, buffer_read(&out));
@@ -156,11 +158,53 @@ START_TEST(test_neg_reply_no_acceptable_methods)
     uint8_t outraw[8];
     buffer  out;
     buffer_init(&out, N(outraw), outraw);
-    uint8_t chosen = fill_negotiation_reply(&p, &out);
+    uint8_t chosen = fill_negotiation_reply(&p, &out, false);
 
     ck_assert_uint_eq(0xFF, chosen);
     ck_assert_uint_eq(0x05, buffer_read(&out));
     ck_assert_uint_eq(0xFF, buffer_read(&out));
+}
+END_TEST
+
+/* Con usuarios configurados (auth obligatoria) un cliente que sólo ofrece
+ * no-auth no puede saltear la autenticación: se rechaza con 0xFF. */
+START_TEST(test_neg_reply_requires_auth_rejects_noauth)
+{
+    struct negotiation_parser p;
+    negotiation_parser_init(&p);
+    uint8_t inraw[32];
+    buffer  in;
+    buffer_init(&in, N(inraw), inraw);
+    uint8_t msg[] = {0x05, 0x01, 0x00}; /* only no-auth */
+    feed_bytes(&p, &in, msg, N(msg));
+
+    uint8_t outraw[8];
+    buffer  out;
+    buffer_init(&out, N(outraw), outraw);
+    uint8_t chosen = fill_negotiation_reply(&p, &out, true);
+
+    ck_assert_uint_eq(0xFF, chosen);
+}
+END_TEST
+
+/* Sin usuarios configurados, ofrecer sólo user/pass no tiene salida (nadie puede
+ * autenticarse): se rechaza con 0xFF en vez de quedar colgado. */
+START_TEST(test_neg_reply_no_users_rejects_userpass)
+{
+    struct negotiation_parser p;
+    negotiation_parser_init(&p);
+    uint8_t inraw[32];
+    buffer  in;
+    buffer_init(&in, N(inraw), inraw);
+    uint8_t msg[] = {0x05, 0x01, 0x02}; /* only user/pass */
+    feed_bytes(&p, &in, msg, N(msg));
+
+    uint8_t outraw[8];
+    buffer  out;
+    buffer_init(&out, N(outraw), outraw);
+    uint8_t chosen = fill_negotiation_reply(&p, &out, false);
+
+    ck_assert_uint_eq(0xFF, chosen);
 }
 END_TEST
 
@@ -176,6 +220,8 @@ Suite *suite(void)
     tcase_add_test(tc, test_neg_reply_prefers_userpass);
     tcase_add_test(tc, test_neg_reply_falls_back_to_noauth);
     tcase_add_test(tc, test_neg_reply_no_acceptable_methods);
+    tcase_add_test(tc, test_neg_reply_requires_auth_rejects_noauth);
+    tcase_add_test(tc, test_neg_reply_no_users_rejects_userpass);
     suite_add_tcase(s, tc);
 
     return s;

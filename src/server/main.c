@@ -38,6 +38,7 @@ main(const int argc, char **argv)
 {
     struct socks5args args;
     parse_args(argc, argv, &args);
+    socks5_set_users(&args);
 
     /* Las escrituras a sockets cerrados no deben matar al proceso. */
     signal(SIGPIPE, SIG_IGN);

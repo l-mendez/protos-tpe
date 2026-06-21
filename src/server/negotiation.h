@@ -54,11 +54,16 @@ bool
 negotiation_done(const struct negotiation_parser *p);
 
 /**
- * Escribe la respuesta de 2 bytes (VER + METHOD) en `b` eligiendo el método:
- * prefiere user/pass si se ofreció, si no no-auth, si no 0xFF. Retorna el
- * método elegido.
+ * Escribe la respuesta de 2 bytes (VER + METHOD) en `b` eligiendo el método
+ * según la política del servidor y lo que ofreció el cliente. Retorna el método
+ * elegido (0xFF si ninguno es aceptable).
+ *
+ * Si `require_auth` (hay usuarios configurados) sólo se acepta user/pass; si no,
+ * sólo no-auth. Así un cliente no puede saltear la autenticación ofreciendo
+ * sólo no-auth, ni quedar colgado pidiendo user/pass cuando no hay usuarios.
  */
 uint8_t
-fill_negotiation_reply(const struct negotiation_parser *p, buffer *b);
+fill_negotiation_reply(const struct negotiation_parser *p, buffer *b,
+                       bool require_auth);
 
 #endif

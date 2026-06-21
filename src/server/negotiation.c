@@ -44,13 +44,22 @@ bool negotiation_done(const struct negotiation_parser *p)
     return p->state == NEG_DONE;
 }
 
-uint8_t fill_negotiation_reply(const struct negotiation_parser *p, buffer *b)
+uint8_t fill_negotiation_reply(const struct negotiation_parser *p, buffer *b,
+                               bool require_auth)
 {
     uint8_t method = SOCKS5_METHOD_NONE;
-    if (p->has_userpass) {
-        method = SOCKS5_METHOD_USERPASS;
-    } else if (p->has_noauth) {
-        method = SOCKS5_METHOD_NOAUTH;
+    if (require_auth) {
+        /* Con usuarios configurados, la autenticación es obligatoria: sólo se
+         * acepta user/pass (no-auth permitiría saltear la validación). */
+        if (p->has_userpass) {
+            method = SOCKS5_METHOD_USERPASS;
+        }
+    } else {
+        /* Sin usuarios configurados nadie puede autenticarse, así que sólo tiene
+         * sentido no-auth. */
+        if (p->has_noauth) {
+            method = SOCKS5_METHOD_NOAUTH;
+        }
     }
 
     buffer_write(b, SOCKS5_VERSION);
