@@ -4,9 +4,9 @@
 #include <unistd.h>
 
 #include "args.h"
-#include "echo.h"
 #include "selector.h"
 #include "server.h"
+#include "socks5.h"
 
 #define MAX_CONNECTIONS 1024
 
@@ -72,13 +72,13 @@ main(const int argc, char **argv)
         goto finally;
     }
 
-    const fd_handler passive_handler = { .handle_read = echo_passive_accept };
+    const fd_handler passive_handler = { .handle_read = socks5_passive_accept };
     if (selector_register(selector, passive, &passive_handler, OP_READ, NULL) != SELECTOR_SUCCESS) {
         err = "no se pudo registrar el socket de escucha";
         goto finally;
     }
 
-    printf("echo escuchando en %s:%hu\n", args.socks_addr, args.socks_port);
+    printf("socks5 escuchando en %s:%hu\n", args.socks_addr, args.socks_port);
 
     bool accepting = true;
     while (true) {
@@ -96,10 +96,10 @@ main(const int argc, char **argv)
                 passive    = -1;
                 accepting  = false;
                 printf("apagando: drenando %zu conexion(es)\n",
-                       echo_active_connections());
+                       socks5_active_connections());
             }
             /* Salir cuando no quedan conexiones, o si llega una segunda señal. */
-            if (echo_active_connections() == 0 || terminate > 1) {
+            if (socks5_active_connections() == 0 || terminate > 1) {
                 break;
             }
         }
