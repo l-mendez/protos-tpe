@@ -36,6 +36,13 @@ static void *run_selector(void *unused)
     return NULL;
 }
 
+/* Yield long enough for the selector thread to advance a few cycles. */
+static void sleep_ms(long ms)
+{
+    struct timespec ts = { .tv_sec = ms / 1000, .tv_nsec = (ms % 1000) * 1000000L };
+    nanosleep(&ts, NULL);
+}
+
 static int connect_to(unsigned short port)
 {
     int fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -691,7 +698,7 @@ START_TEST(test_socks5_reap_idle_connection)
     negotiate_noauth(client);
 
     /* Esperar un ciclo del selector para que la conexión procese la negociación. */
-    usleep(200000);
+    sleep_ms(200);
 
     /* Forzar que la conexión parezca expirada: atrasar last_activity. */
     ck_assert_uint_ge(socks5_active_connections(), 1);
@@ -728,7 +735,7 @@ START_TEST(test_socks5_reap_skips_req_resolve)
     int client = connect_to(port);
 
     /* Esperar a que el accept cree la conexión. */
-    usleep(200000);
+    sleep_ms(200);
 
     ck_assert_uint_ge(socks5_active_connections(), 1);
     struct socks5_conn *c = conn_list;
