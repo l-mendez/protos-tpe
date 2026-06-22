@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "args.h"
@@ -65,6 +66,11 @@ struct socks5_conn {
     int         origin_fd;    /* fd del lado origen (-1 si no existe) */
     int         references;   /* cuántos fds registrados comparten este conn */
 
+    /* Reaper de inactividad ---------------------------------------------- */
+    time_t       last_activity; /* última vez que un handler procesó un evento */
+    struct socks5_conn *prev;   /* doubly-linked list para recorrer en el reaper */
+    struct socks5_conn *next;
+
     /* Resolución DNS / retry ------------------------------------------------ */
     struct addrinfo        *resolution; /* resultado de getaddrinfo (FQDN) */
     struct addrinfo        *next_addr;  /* siguiente dirección a probar */
@@ -87,6 +93,40 @@ struct socks5_conn {
 };
 
 static size_t active_connections = 0;
+
+/** Lista doblemente enlazada de conexiones activas, para recorrer en el reaper. */
+static struct socks5_conn *conn_list = NULL;
+
+/** Tiempo máximo (en segundos) sin actividad antes de cerrar una conexión.
+ *  MEJORA FUTURA (two-tier): usar un umbral corto para fases de handshake/connect
+ *  (NEG..REQ_WRITE) y uno más largo (o desactivado) para RELAY, para no cortar
+ *  túneles inactivos legítimos (e.g. SSH). */
+#define SOCKS5_INACTIVITY_TIMEOUT 60
+
+/* Inserta un conn al frente de la lista. */
+static void conn_list_push(struct socks5_conn *c)
+{
+    c->prev = NULL;
+    c->next = conn_list;
+    if (conn_list != NULL) {
+        conn_list->prev = c;
+    }
+    conn_list = c;
+}
+
+/* Quita un conn de la lista. */
+static void conn_list_remove(struct socks5_conn *c)
+{
+    if (c->prev != NULL) {
+        c->prev->next = c->next;
+    } else {
+        conn_list = c->next;
+    }
+    if (c->next != NULL) {
+        c->next->prev = c->prev;
+    }
+    c->prev = c->next = NULL;
+}
 
 /* Usuarios configurados por línea de comandos (-u user:pass). Apuntan al arreglo
  * de `struct socks5args`, que vive durante toda la ejecución en main(). */
@@ -784,6 +824,50 @@ static void socks5_done(struct selector_key *key)
     }
 }
 
+/* Throttle del reaper: última vez que se recorrió la lista (evita recorrer más
+ * de una vez por segundo). A nivel de archivo para que los tests puedan
+ * resetearlo entre casos. */
+static time_t reap_last_sweep = 0;
+
+/* Cierra conexiones que llevan más de SOCKS5_INACTIVITY_TIMEOUT segundos sin
+ * actividad.  Se invoca desde el loop principal después de cada selector_select,
+ * así que corre a lo sumo cada select_timeout (10s).  Usa un throttle estático
+ * para no recorrer la lista más de una vez por segundo. */
+void socks5_reap_idle(fd_selector s)
+{
+    const time_t now = time(NULL);
+    if (now == reap_last_sweep) {
+        return;
+    }
+    reap_last_sweep = now;
+
+    for (struct socks5_conn *c = conn_list; c != NULL; ) {
+        struct socks5_conn *nxt = c->next; /* capturar: socks5_done libera c */
+
+        /* REQ_RESOLVE: hilo getaddrinfo en vuelo con una referencia viva; no es
+         * seguro cerrar acá (getaddrinfo trae su propio timeout de sistema).
+         *
+         * MEJORA FUTURA (two-tier): elegir el umbral según stm_state(&c->stm) —
+         * uno corto para fases de handshake/connect (NEG..REQ_WRITE) y otro más
+         * largo (o desactivado) para RELAY, así no se cortan túneles inactivos
+         * legítimos (e.g. SSH, conexiones keep-alive).
+         *
+         * MEJORA FUTURA (reply): en vez de cerrar silenciosamente, enviar una
+         * respuesta SOCKS5 REP_TTL_EXPIRED (0x06) cuando el timeout vence en
+         * fase de connect, para informar al cliente. */
+        if (stm_state(&c->stm) != REQ_RESOLVE &&
+            now - c->last_activity >= SOCKS5_INACTIVITY_TIMEOUT) {
+            struct selector_key key = {
+                .s    = s,
+                .fd   = c->client_fd,
+                .data = c,
+            };
+            socks5_done(&key);
+        }
+        c = nxt;
+    }
+}
+
 static bool is_read_state(unsigned st)
 {
     return st == NEG_READ || st == AUTH_READ || st == REQ_READ;
@@ -797,6 +881,7 @@ static bool is_read_state(unsigned st)
 static void socks5_advance(struct selector_key *key, unsigned st)
 {
     struct socks5_conn *c = key->data;
+    c->last_activity = time(NULL);
     while (is_read_state(st) && buffer_can_read(&c->read_buffer)) {
         st = stm_handler_read(&c->stm, key);
     }
@@ -828,6 +913,7 @@ static void socks5_close(struct selector_key *key)
     struct socks5_conn *c = key->data;
     close(key->fd);
     if (--c->references <= 0) {
+        conn_list_remove(c);
         if (c->resolution != NULL) {
             freeaddrinfo(c->resolution);
         }
@@ -880,5 +966,7 @@ void socks5_passive_accept(struct selector_key *key)
         close(client);
         return;
     }
+    conn->last_activity = time(NULL);
+    conn_list_push(conn);
     active_connections++;
 }

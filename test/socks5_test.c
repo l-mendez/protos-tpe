@@ -672,6 +672,95 @@ START_TEST(test_socks5_fqdn_connect_and_relay)
 }
 END_TEST
 
+/* ==================================== inactivity reaper tests =========== */
+
+/* Una conexión idle por más de SOCKS5_INACTIVITY_TIMEOUT debe ser cosechada. */
+START_TEST(test_socks5_reap_idle_connection)
+{
+    socks5_set_users(&no_users);
+
+    int            passive;
+    unsigned short port = start_server(&passive);
+
+    test_stop = 0;
+    pthread_t loop;
+    ck_assert_int_eq(pthread_create(&loop, NULL, run_selector, NULL), 0);
+
+    int client = connect_to(port);
+    /* Enviar sólo la negociación; después no hacer nada (simulando idle). */
+    negotiate_noauth(client);
+
+    /* Esperar un ciclo del selector para que la conexión procese la negociación. */
+    usleep(200000);
+
+    /* Forzar que la conexión parezca expirada: atrasar last_activity. */
+    ck_assert_uint_ge(socks5_active_connections(), 1);
+    struct socks5_conn *c = conn_list;
+    ck_assert_ptr_nonnull(c);
+    c->last_activity = time(NULL) - SOCKS5_INACTIVITY_TIMEOUT - 1;
+
+    reap_last_sweep = 0; /* reset throttle para que el barrido corra */
+    socks5_reap_idle(test_selector);
+
+    ck_assert_uint_eq(socks5_active_connections(), 0);
+
+    close(client);
+    test_stop = 1;
+    pthread_join(loop, NULL);
+    selector_destroy(test_selector);
+    selector_close();
+    close(passive);
+}
+END_TEST
+
+/* Una conexión en REQ_RESOLVE no debe ser cosechada, incluso si está expirada. */
+START_TEST(test_socks5_reap_skips_req_resolve)
+{
+    socks5_set_users(&no_users);
+
+    int            passive;
+    unsigned short port = start_server(&passive);
+
+    test_stop = 0;
+    pthread_t loop;
+    ck_assert_int_eq(pthread_create(&loop, NULL, run_selector, NULL), 0);
+
+    int client = connect_to(port);
+
+    /* Esperar a que el accept cree la conexión. */
+    usleep(200000);
+
+    ck_assert_uint_ge(socks5_active_connections(), 1);
+    struct socks5_conn *c = conn_list;
+    ck_assert_ptr_nonnull(c);
+
+    /* Forzar el estado a REQ_RESOLVE y expirar el last_activity.
+     * current apunta a la tabla de estados indexada por el enum. */
+    c->stm.current = &socks5_states[REQ_RESOLVE];
+    c->last_activity = time(NULL) - SOCKS5_INACTIVITY_TIMEOUT - 100;
+
+    reap_last_sweep = 0; /* reset throttle */
+    socks5_reap_idle(test_selector);
+
+    /* La conexión debe seguir viva a pesar de estar expirada. */
+    ck_assert_uint_ge(socks5_active_connections(), 1);
+
+    /* Limpieza: restaurar un estado que permita al reaper cerrar. */
+    c->stm.current = &socks5_states[NEG_READ];
+    c->last_activity = 0; /* asegurar expiración */
+    reap_last_sweep = 0;
+    socks5_reap_idle(test_selector);
+    ck_assert_uint_eq(socks5_active_connections(), 0);
+
+    close(client);
+    test_stop = 1;
+    pthread_join(loop, NULL);
+    selector_destroy(test_selector);
+    selector_close();
+    close(passive);
+}
+END_TEST
+
 /* ======================================================== suite ========= */
 
 static Suite *socks5_suite(void)
@@ -691,6 +780,8 @@ static Suite *socks5_suite(void)
     tcase_add_test(tc, test_socks5_relay_echo);
     tcase_add_test(tc, test_socks5_connect_refused);
     tcase_add_test(tc, test_socks5_fqdn_connect_and_relay);
+    tcase_add_test(tc, test_socks5_reap_idle_connection);
+    tcase_add_test(tc, test_socks5_reap_skips_req_resolve);
     suite_add_tcase(s, tc);
     return s;
 }

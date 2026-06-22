@@ -88,6 +88,8 @@ main(const int argc, char **argv)
             goto finally;
         }
 
+        socks5_reap_idle(selector);
+
         if (terminate) {
             if (accepting) {
                 /* Apagado ordenado: dejar de aceptar nuevas conexiones y

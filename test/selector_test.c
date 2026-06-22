@@ -1,4 +1,6 @@
+#include <fcntl.h>
 #include <stdlib.h>
+#include <unistd.h>
 #include <check.h>
 
 #define INITIAL_SIZE ((size_t) 1024)
@@ -152,7 +154,57 @@ START_TEST (test_selector_register_unregister_register) {
 }
 END_TEST
 
-Suite * 
+/* close_called: se pone en true si handle_close se ejecuta. */
+static bool close_called = false;
+static void
+close_flag_callback(struct selector_key *key) {
+    (void)key;
+    close_called = true;
+}
+
+/* Verifica que selector_unregister_fd_noclose desregistra el fd sin invocar
+ * handle_close, dejando el descriptor abierto y la ranura reutilizable. */
+START_TEST (test_selector_unregister_fd_noclose) {
+    fd_selector s = selector_new(INITIAL_SIZE);
+    ck_assert_ptr_nonnull(s);
+
+    int fds[2];
+    ck_assert_int_eq(0, pipe(fds));
+    int fd = fds[0]; /* usamos el extremo de lectura */
+
+    const struct fd_handler h = {
+        .handle_close = close_flag_callback,
+    };
+
+    ck_assert_uint_eq(SELECTOR_SUCCESS,
+                      selector_register(s, fd, &h, OP_READ, data_mark));
+
+    /* noclose: no debe invocar handle_close */
+    close_called = false;
+    ck_assert_uint_eq(SELECTOR_SUCCESS,
+                      selector_unregister_fd_noclose(s, fd));
+    ck_assert(!close_called);
+
+    /* el fd sigue abierto: fcntl devuelve >= 0 */
+    ck_assert_int_ne(-1, fcntl(fd, F_GETFD));
+
+    /* la ranura quedó libre: se puede volver a registrar */
+    ck_assert_uint_eq(SELECTOR_SUCCESS,
+                      selector_register(s, fd, &h, OP_READ, data_mark));
+
+    /* ahora unregister normal: SÍ debe invocar handle_close */
+    close_called = false;
+    ck_assert_uint_eq(SELECTOR_SUCCESS,
+                      selector_unregister_fd(s, fd));
+    ck_assert(close_called);
+
+    close(fds[0]);
+    close(fds[1]);
+    selector_destroy(s);
+}
+END_TEST
+
+Suite *
 suite(void) {
     Suite *s  = suite_create("nio");
     TCase *tc = tcase_create("nio");
@@ -162,6 +214,7 @@ suite(void) {
     tcase_add_test(tc, test_ensure_capacity);
     tcase_add_test(tc, test_selector_register_fd);
     tcase_add_test(tc, test_selector_register_unregister_register);
+    tcase_add_test(tc, test_selector_unregister_fd_noclose);
     suite_add_tcase(s, tc);
 
     return s;

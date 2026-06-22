@@ -418,6 +418,36 @@ finally:
 }
 
 selector_status
+selector_unregister_fd_noclose(fd_selector       s,
+                               const int         fd) {
+    selector_status ret = SELECTOR_SUCCESS;
+
+    if(NULL == s || INVALID_FD(fd)) {
+        ret = SELECTOR_IARGS;
+        goto finally;
+    }
+
+    struct item *item = s->fds + fd;
+    if(!ITEM_USED(item)) {
+        ret = SELECTOR_IARGS;
+        goto finally;
+    }
+
+    /* A diferencia de selector_unregister_fd, NO invoca handle_close: el caller
+     * se queda con el fd abierto y se hace cargo de cerrarlo. */
+
+    item->interest = OP_NOOP;
+    items_update_fdset_for_fd(s, item);
+
+    memset(item, 0x00, sizeof(*item));
+    item_init(item);
+    s->max_fd = items_max_fd(s);
+
+finally:
+    return ret;
+}
+
+selector_status
 selector_set_interest(fd_selector s, int fd, fd_interest i) {
     selector_status ret = SELECTOR_SUCCESS;
 
