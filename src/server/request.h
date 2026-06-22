@@ -46,8 +46,12 @@ typedef enum {
 /* REP: códigos de respuesta del request (RFC 1928 §6). */
 #define SOCKS5_REP_SUCCESS           0x00
 #define SOCKS5_REP_GENERAL_FAILURE   0x01
-#define SOCKS5_REP_CMD_NOT_SUPPORTED 0x07
-#define SOCKS5_REP_ATYP_NOT_SUPPORTED 0x08
+#define SOCKS5_REP_NETWORK_UNREACHABLE 0x03
+#define SOCKS5_REP_HOST_UNREACHABLE    0x04
+#define SOCKS5_REP_CONNECTION_REFUSED  0x05
+#define SOCKS5_REP_TTL_EXPIRED         0x06
+#define SOCKS5_REP_CMD_NOT_SUPPORTED   0x07
+#define SOCKS5_REP_ATYP_NOT_SUPPORTED  0x08
 
 struct socks5_request {
     req_state state; /* el progreso vive acá, explícito */

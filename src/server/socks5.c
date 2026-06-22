@@ -1,5 +1,9 @@
 #include <arpa/inet.h>
 #include <errno.h>
+#include <netdb.h>
+#include <netinet/in.h>
+#include <pthread.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -14,7 +18,7 @@
 #include "socks5.h"
 #include "stm.h"
 
-#define SOCKS5_BUFFER_SIZE 4096
+#define SOCKS5_BUFFER_SIZE 8192
 
 /* Linux evita el SIGPIPE en send() con esta flag; macOS no la define y lo
  * resuelve ignorando SIGPIPE en el arranque, así que aquí degrada a 0. */
@@ -29,20 +33,22 @@ static inline int would_block(int err)
     return err == EAGAIN || err == EWOULDBLOCK || err == EINTR;
 }
 
-/* Estados de la conexión SOCKS5. Resolución de nombres, conexión al origen y
- * relay de datos no están implementados todavía. */
+/* Estados de la conexión SOCKS5. */
 enum socks5_state {
-    NEG_READ = 0, /* leyendo/parseando la negociación de métodos */
-    NEG_WRITE,    /* escribiendo la respuesta de método (2 bytes) */
-    AUTH_READ,    /* leyendo/parseando las credenciales user/pass (RFC 1929) */
-    AUTH_WRITE,   /* escribiendo la respuesta de auth (2 bytes) */
-    REQ_READ,     /* leyendo/parseando el request */
-    REQ_WRITE,    /* escribiendo la respuesta de error del request */
-    DONE,         /* terminal: la conexión terminó, hay que cerrarla */
-    ERROR,        /* terminal: error de protocolo o de I/O */
+    NEG_READ = 0,   /* leyendo/parseando la negociación de métodos */
+    NEG_WRITE,      /* escribiendo la respuesta de método (2 bytes) */
+    AUTH_READ,      /* leyendo/parseando las credenciales user/pass (RFC 1929) */
+    AUTH_WRITE,     /* escribiendo la respuesta de auth (2 bytes) */
+    REQ_READ,       /* leyendo/parseando el request */
+    REQ_RESOLVE,    /* esperando resolución DNS (hilo getaddrinfo, solo FQDN) */
+    REQ_CONNECTING, /* connect() no bloqueante en vuelo (origin fd OP_WRITE) */
+    REQ_WRITE,      /* escribiendo la respuesta del request */
+    RELAY,          /* relay full-duplex entre cliente y origen */
+    DONE,           /* terminal: la conexión terminó, hay que cerrarla */
+    ERROR,          /* terminal: error de protocolo o de I/O */
 };
 
-/** Estado por conexión: stm + parsers + buffers cliente. */
+/** Estado por conexión: stm + parsers + buffers + estado de conexión/relay. */
 struct socks5_conn {
     struct state_machine stm;
 
@@ -53,6 +59,27 @@ struct socks5_conn {
     uint8_t method;      /* método elegido en la negociación */
     uint8_t auth_status; /* resultado de auth, a enviar en AUTH_WRITE */
 
+    /* Selector, fds y teardown ------------------------------------------- */
+    fd_selector selector;
+    int         client_fd;    /* fd del lado cliente */
+    int         origin_fd;    /* fd del lado origen (-1 si no existe) */
+    int         references;   /* cuántos fds registrados comparten este conn */
+
+    /* Resolución DNS / retry ------------------------------------------------ */
+    struct addrinfo        *resolution; /* resultado de getaddrinfo (FQDN) */
+    struct addrinfo        *next_addr;  /* siguiente dirección a probar */
+    struct addrinfo         literal_ai; /* entrada sintética para IPv4/IPv6 */
+    struct sockaddr_storage literal_sa; /* storage para la dirección literal */
+    int                     last_errno; /* errno del último connect fallido */
+    bool                    connected;  /* true si el connect tuvo éxito */
+
+    /* Relay ----------------------------------------------------------------- */
+    bool client_closed;     /* cliente envió EOF */
+    bool origin_closed;     /* origen envió EOF */
+    bool client_wr_shut;    /* ya se hizo shutdown(client, SHUT_WR) */
+    bool origin_wr_shut;    /* ya se hizo shutdown(origin, SHUT_WR) */
+
+    /* read_buffer: client → origin.  write_buffer: origin → client. */
     struct buffer read_buffer;
     struct buffer write_buffer;
     uint8_t       raw_read[SOCKS5_BUFFER_SIZE];
@@ -254,6 +281,11 @@ static unsigned auth_write(struct selector_key *key)
     return REQ_READ;
 }
 
+/* ----------------------------------------- forward declarations (connect/relay) */
+
+static const fd_handler socks5_handler;
+static unsigned request_connect(struct selector_key *key);
+
 /* -------------------------------------------------------------- request phase */
 
 static void request_read_init(const unsigned state, struct selector_key *key)
@@ -291,15 +323,93 @@ static void log_request_dst(const struct socks5_request *r)
 }
 
 /* Encola la respuesta de error del request (RFC 1928 §6) y pasa a escribirla
- * antes de cerrar, en línea con cómo responden las fases de negociación y auth. */
+ * antes de cerrar. Siempre opera sobre el client_fd, no sobre key->fd (que puede
+ * ser el origin_fd si se invoca desde el contexto de conexión al origen). */
 static unsigned request_fail(struct selector_key *key, uint8_t rep)
 {
     struct socks5_conn *c = key->data;
+    c->connected = false;
     fill_request_reply(&c->write_buffer, rep);
-    if (selector_set_interest_key(key, OP_WRITE) != SELECTOR_SUCCESS) {
+    if (c->origin_fd != -1) {
+        selector_set_interest(key->s, c->origin_fd, OP_NOOP);
+    }
+    if (selector_set_interest(key->s, c->client_fd, OP_WRITE) != SELECTOR_SUCCESS) {
         return ERROR;
     }
     return REQ_WRITE;
+}
+
+/* Traduce el errno de un connect() fallido al código REP de SOCKS5 (§6). */
+static uint8_t rep_from_errno(int err)
+{
+    switch (err) {
+        case ECONNREFUSED:                  return SOCKS5_REP_CONNECTION_REFUSED;
+        case ENETUNREACH:                   return SOCKS5_REP_NETWORK_UNREACHABLE;
+        case EHOSTUNREACH:                  return SOCKS5_REP_HOST_UNREACHABLE;
+        case ETIMEDOUT:                     return SOCKS5_REP_TTL_EXPIRED;
+        default:                            return SOCKS5_REP_GENERAL_FAILURE;
+    }
+}
+
+/* Arma una addrinfo sintética apuntando a literal_sa para destinos IPv4/IPv6
+ * (sin necesidad de getaddrinfo). */
+static void build_literal_addr(struct socks5_conn *c)
+{
+    const struct socks5_request *r = &c->request;
+    memset(&c->literal_sa, 0, sizeof(c->literal_sa));
+    memset(&c->literal_ai, 0, sizeof(c->literal_ai));
+
+    if (r->atyp == SOCKS5_ATYP_IPV4) {
+        struct sockaddr_in *sa4 = (struct sockaddr_in *)&c->literal_sa;
+        sa4->sin_family = AF_INET;
+        memcpy(&sa4->sin_addr, r->dst_addr, 4);
+        sa4->sin_port = htons(r->dst_port);
+        c->literal_ai.ai_family   = AF_INET;
+        c->literal_ai.ai_addrlen  = sizeof(*sa4);
+    } else {
+        struct sockaddr_in6 *sa6 = (struct sockaddr_in6 *)&c->literal_sa;
+        sa6->sin6_family = AF_INET6;
+        memcpy(&sa6->sin6_addr, r->dst_addr, 16);
+        sa6->sin6_port = htons(r->dst_port);
+        c->literal_ai.ai_family   = AF_INET6;
+        c->literal_ai.ai_addrlen  = sizeof(*sa6);
+    }
+    c->literal_ai.ai_socktype = SOCK_STREAM;
+    c->literal_ai.ai_protocol = IPPROTO_TCP;
+    c->literal_ai.ai_addr     = (struct sockaddr *)&c->literal_sa;
+    c->literal_ai.ai_next     = NULL;
+    c->next_addr = &c->literal_ai;
+}
+
+/* Hilo de resolución DNS: ejecuta getaddrinfo y despierta al selector. */
+static void *resolve_run(void *arg)
+{
+    struct socks5_conn *c = arg;
+    const struct socks5_request *r = &c->request;
+
+    /* NUL-terminamos el dominio para getaddrinfo. */
+    char host[256];
+    memcpy(host, r->dst_addr, r->addr_len);
+    host[r->addr_len] = '\0';
+
+    char port[6];
+    snprintf(port, sizeof(port), "%u", r->dst_port);
+
+    struct addrinfo hints = {
+        .ai_family   = AF_UNSPEC,
+        .ai_socktype = SOCK_STREAM,
+        .ai_protocol = IPPROTO_TCP,
+    };
+    int rc = getaddrinfo(host, port, &hints, &c->resolution);
+    if (rc != 0) {
+        c->resolution = NULL;
+    }
+
+    if (selector_notify_block(c->selector, c->client_fd) != SELECTOR_SUCCESS) {
+        fprintf(stderr, "socks5: selector_notify_block failed for fd %d\n",
+                c->client_fd);
+    }
+    return NULL;
 }
 
 static unsigned request_read(struct selector_key *key)
@@ -322,9 +432,6 @@ static unsigned request_read(struct selector_key *key)
         return REQ_READ; /* lectura parcial: esperar más datos */
     }
 
-    /* Sólo se soporta CONNECT (RFC 1928 §4); el resto se rechaza. Resolución de
-     * nombres, conexión al origen y relay aún no existen, así que un CONNECT
-     * válido se registra y la conexión termina. */
     const struct socks5_request *r = &c->request;
     if (r->cmd != SOCKS5_CMD_CONNECT) {
         printf("socks5: comando no soportado (cmd=%u)\n", r->cmd);
@@ -332,8 +439,140 @@ static unsigned request_read(struct selector_key *key)
     }
 
     log_request_dst(r);
-    return DONE;
+
+    /* IPv4/IPv6 literal: armar addrinfo sintética y conectar directamente. */
+    if (r->atyp == SOCKS5_ATYP_IPV4 || r->atyp == SOCKS5_ATYP_IPV6) {
+        build_literal_addr(c);
+        return request_connect(key);
+    }
+
+    /* FQDN: resolver en un hilo aparte. Parquear el cliente sin interés hasta que
+     * el hilo complete la resolución y despierte al selector. Se cuenta el hilo
+     * como referencia para evitar un use-after-free si la conexión se cierra
+     * antes de que el hilo termine (e.g. apagado forzado). */
+    if (selector_set_interest_key(key, OP_NOOP) != SELECTOR_SUCCESS) {
+        return ERROR;
+    }
+    c->references++;
+    pthread_t tid;
+    if (pthread_create(&tid, NULL, resolve_run, c) != 0) {
+        c->references--;
+        return request_fail(key, SOCKS5_REP_GENERAL_FAILURE);
+    }
+    pthread_detach(tid);
+    return REQ_RESOLVE;
 }
+
+/* -------------------------------------------------------- DNS resolve complete */
+
+static unsigned request_resolve_done(struct selector_key *key)
+{
+    struct socks5_conn *c = key->data;
+    c->references--;
+
+    if (c->resolution == NULL) {
+        return request_fail(key, SOCKS5_REP_HOST_UNREACHABLE);
+    }
+    c->next_addr = c->resolution;
+    return request_connect(key);
+}
+
+/* -------------------------------------------------------- connect to origin */
+
+/* Intenta conectar al siguiente candidato de la lista de direcciones. Si todos
+ * fallan, responde con el error SOCKS5 adecuado. */
+static unsigned request_connect(struct selector_key *key)
+{
+    struct socks5_conn *c = key->data;
+
+    while (c->next_addr != NULL) {
+        struct addrinfo *ai = c->next_addr;
+        c->next_addr = ai->ai_next;
+
+        int fd = socket(ai->ai_family, SOCK_STREAM, 0);
+        if (fd < 0) {
+            c->last_errno = errno;
+            continue;
+        }
+        if (selector_fd_set_nio(fd) < 0) {
+            c->last_errno = errno;
+            close(fd);
+            continue;
+        }
+
+        int rc = connect(fd, ai->ai_addr, ai->ai_addrlen);
+        if (rc == 0) {
+            /* Conexión inmediata (loopback, etc.). */
+            c->origin_fd = fd;
+            c->connected = true;
+            fill_request_reply(&c->write_buffer, SOCKS5_REP_SUCCESS);
+            if (selector_register(key->s, fd, &socks5_handler, OP_NOOP, c) != SELECTOR_SUCCESS) {
+                close(fd);
+                c->origin_fd = -1;
+                return ERROR;
+            }
+            c->references++;
+            if (selector_set_interest(key->s, c->client_fd, OP_WRITE) != SELECTOR_SUCCESS) {
+                return ERROR;
+            }
+            return REQ_WRITE;
+        }
+        if (errno == EINPROGRESS) {
+            c->origin_fd = fd;
+            if (selector_register(key->s, fd, &socks5_handler, OP_WRITE, c) != SELECTOR_SUCCESS) {
+                close(fd);
+                c->origin_fd = -1;
+                return request_fail(key, SOCKS5_REP_GENERAL_FAILURE);
+            }
+            c->references++;
+            if (selector_set_interest(key->s, c->client_fd, OP_NOOP) != SELECTOR_SUCCESS) {
+                return ERROR;
+            }
+            return REQ_CONNECTING;
+        }
+        /* Fallo inmediato de connect: probar la siguiente. */
+        c->last_errno = errno;
+        close(fd);
+    }
+
+    /* Todas las direcciones fallaron. */
+    return request_fail(key, rep_from_errno(c->last_errno));
+}
+
+/* on_write_ready del origin_fd durante REQ_CONNECTING: el connect() completó
+ * (con éxito o con error). */
+static unsigned request_connecting(struct selector_key *key)
+{
+    struct socks5_conn *c = key->data;
+
+    int       so_error = 0;
+    socklen_t len      = sizeof(so_error);
+    if (getsockopt(key->fd, SOL_SOCKET, SO_ERROR, &so_error, &len) < 0) {
+        so_error = errno;
+    }
+
+    if (so_error == 0) {
+        /* Conexión exitosa. */
+        c->connected = true;
+        fill_request_reply(&c->write_buffer, SOCKS5_REP_SUCCESS);
+        if (selector_set_interest(key->s, c->origin_fd, OP_NOOP) != SELECTOR_SUCCESS) {
+            return ERROR;
+        }
+        if (selector_set_interest(key->s, c->client_fd, OP_WRITE) != SELECTOR_SUCCESS) {
+            return ERROR;
+        }
+        return REQ_WRITE;
+    }
+
+    /* Fallo: desregistrar el origin_fd y probar la siguiente dirección. */
+    c->last_errno = so_error;
+    selector_unregister_fd(key->s, c->origin_fd);
+    /* socks5_close decrementó references y cerró el fd */
+    c->origin_fd = -1;
+    return request_connect(key);
+}
+
+/* ----------------------------------------------------------- request write */
 
 static unsigned request_write(struct selector_key *key)
 {
@@ -341,7 +580,7 @@ static unsigned request_write(struct selector_key *key)
 
     size_t   pending;
     uint8_t *ptr = buffer_read_ptr(&c->write_buffer, &pending);
-    ssize_t  n   = send(key->fd, ptr, pending, MSG_NOSIGNAL);
+    ssize_t  n   = send(c->client_fd, ptr, pending, MSG_NOSIGNAL);
     if (n <= 0) {
         return (n < 0 && would_block(errno)) ? REQ_WRITE : ERROR;
     }
@@ -350,7 +589,124 @@ static unsigned request_write(struct selector_key *key)
     if (buffer_can_read(&c->write_buffer)) {
         return REQ_WRITE; /* escritura parcial: falta vaciar el buffer */
     }
-    return DONE; /* la respuesta de error ya se envió: cerrar */
+    if (!c->connected) {
+        return DONE; /* la respuesta de error ya se envió: cerrar */
+    }
+    /* Éxito: pasar al relay. */
+    return RELAY;
+}
+
+/* ------------------------------------------------------------------- relay */
+
+/* Recalcula los intereses de ambos fds según el estado de los buffers y los
+ * flags de cierre. Devuelve RELAY si hay algo pendiente, o DONE si se acabó. */
+static unsigned relay_update(struct socks5_conn *c)
+{
+    /* Propagar medio-cierre: si un lado envió EOF y ya drenamos el buffer
+     * correspondiente, hacer shutdown(SHUT_WR) del otro lado. */
+    if (c->client_closed && !buffer_can_read(&c->read_buffer) && !c->origin_wr_shut) {
+        shutdown(c->origin_fd, SHUT_WR);
+        c->origin_wr_shut = true;
+    }
+    if (c->origin_closed && !buffer_can_read(&c->write_buffer) && !c->client_wr_shut) {
+        shutdown(c->client_fd, SHUT_WR);
+        c->client_wr_shut = true;
+    }
+
+    /* Si ambas direcciones cerraron y los buffers están vacíos: terminamos. */
+    if (c->client_wr_shut && c->origin_wr_shut) {
+        return DONE;
+    }
+
+    /* Calcular interés del client_fd. */
+    fd_interest ci = OP_NOOP;
+    if (!c->client_closed && buffer_can_write(&c->read_buffer)) {
+        ci = (fd_interest)(ci | OP_READ);
+    }
+    if (buffer_can_read(&c->write_buffer) && !c->client_wr_shut) {
+        ci = (fd_interest)(ci | OP_WRITE);
+    }
+    selector_set_interest(c->selector, c->client_fd, ci);
+
+    /* Calcular interés del origin_fd. */
+    fd_interest oi = OP_NOOP;
+    if (!c->origin_closed && buffer_can_write(&c->write_buffer)) {
+        oi = (fd_interest)(oi | OP_READ);
+    }
+    if (buffer_can_read(&c->read_buffer) && !c->origin_wr_shut) {
+        oi = (fd_interest)(oi | OP_WRITE);
+    }
+    selector_set_interest(c->selector, c->origin_fd, oi);
+
+    return RELAY;
+}
+
+static void relay_init(const unsigned state, struct selector_key *key)
+{
+    (void)state;
+    struct socks5_conn *c = key->data;
+    c->client_closed  = false;
+    c->origin_closed  = false;
+    c->client_wr_shut = false;
+    c->origin_wr_shut = false;
+    relay_update(c);
+}
+
+static unsigned relay_read(struct selector_key *key)
+{
+    struct socks5_conn *c = key->data;
+    bool from_client = (key->fd == c->client_fd);
+
+    /* Elegir el buffer destino: lectura del cliente va a read_buffer (c→o),
+     * lectura del origen va a write_buffer (o→c). */
+    struct buffer *dst = from_client ? &c->read_buffer : &c->write_buffer;
+
+    size_t   space;
+    uint8_t *ptr = buffer_write_ptr(dst, &space);
+    ssize_t  n   = recv(key->fd, ptr, space, 0);
+
+    if (n > 0) {
+        buffer_write_adv(dst, n);
+        return relay_update(c);
+    }
+    if (n < 0 && would_block(errno)) {
+        return RELAY;
+    }
+    if (n < 0) {
+        return ERROR; /* error real de I/O */
+    }
+    /* n == 0: EOF del peer. */
+    if (from_client) {
+        c->client_closed = true;
+    } else {
+        c->origin_closed = true;
+    }
+    return relay_update(c);
+}
+
+static unsigned relay_write(struct selector_key *key)
+{
+    struct socks5_conn *c = key->data;
+    bool to_client = (key->fd == c->client_fd);
+
+    /* Elegir el buffer fuente: escritura al cliente drena write_buffer (o→c),
+     * escritura al origen drena read_buffer (c→o). */
+    struct buffer *src = to_client ? &c->write_buffer : &c->read_buffer;
+
+    size_t   pending;
+    uint8_t *ptr = buffer_read_ptr(src, &pending);
+    ssize_t  n   = send(key->fd, ptr, pending, MSG_NOSIGNAL);
+
+    if (n > 0) {
+        buffer_read_adv(src, n);
+        return relay_update(c);
+    }
+    if (n < 0 && would_block(errno)) {
+        return RELAY;
+    }
+    /* n == 0 (no progreso) o error real: tratar como cierre para evitar
+     * busy-loop en level-triggered (ver nota de diseño del issue). */
+    return ERROR;
 }
 
 /* ---------------------------------------------------------------- stm tables */
@@ -380,8 +736,22 @@ static const struct state_definition socks5_states[] = {
         .on_read_ready = request_read,
     },
     {
+        .state          = REQ_RESOLVE,
+        .on_block_ready = request_resolve_done,
+    },
+    {
+        .state          = REQ_CONNECTING,
+        .on_write_ready = request_connecting,
+    },
+    {
         .state          = REQ_WRITE,
         .on_write_ready = request_write,
+    },
+    {
+        .state          = RELAY,
+        .on_arrival     = relay_init,
+        .on_read_ready  = relay_read,
+        .on_write_ready = relay_write,
     },
     {
         .state = DONE,
@@ -393,9 +763,25 @@ static const struct state_definition socks5_states[] = {
 
 /* ----------------------------------------------------- selector glue / accept */
 
+/* Desregistra ambos fds (si existen) del selector, lo que provoca el cierre
+ * vía socks5_close por cada uno. */
 static void socks5_done(struct selector_key *key)
 {
-    selector_unregister_fd(key->s, key->fd);
+    struct socks5_conn *c = key->data;
+    int cfd = c->client_fd;
+    int ofd = c->origin_fd;
+
+    /* Desregistrar ambos; el orden no importa: socks5_close libera el conn solo
+     * cuando el último fd se cierra (ref-count). Marcar -1 antes para que
+     * socks5_close no vuelva a intentar desregistrar un fd ya cerrado. */
+    c->client_fd = -1;
+    c->origin_fd = -1;
+    if (ofd != -1) {
+        selector_unregister_fd(key->s, ofd);
+    }
+    if (cfd != -1) {
+        selector_unregister_fd(key->s, cfd);
+    }
 }
 
 static bool is_read_state(unsigned st)
@@ -431,16 +817,29 @@ static void socks5_write(struct selector_key *key)
     socks5_advance(key, stm_handler_write(&c->stm, key));
 }
 
+static void socks5_block(struct selector_key *key)
+{
+    struct socks5_conn *c = key->data;
+    socks5_advance(key, stm_handler_block(&c->stm, key));
+}
+
 static void socks5_close(struct selector_key *key)
 {
-    free(key->data);
+    struct socks5_conn *c = key->data;
     close(key->fd);
-    active_connections--;
+    if (--c->references <= 0) {
+        if (c->resolution != NULL) {
+            freeaddrinfo(c->resolution);
+        }
+        free(c);
+        active_connections--;
+    }
 }
 
 static const fd_handler socks5_handler = {
     .handle_read  = socks5_read,
     .handle_write = socks5_write,
+    .handle_block = socks5_block,
     .handle_close = socks5_close,
 };
 
@@ -465,6 +864,11 @@ void socks5_passive_accept(struct selector_key *key)
     }
     buffer_init(&conn->read_buffer, sizeof(conn->raw_read), conn->raw_read);
     buffer_init(&conn->write_buffer, sizeof(conn->raw_write), conn->raw_write);
+
+    conn->selector   = key->s;
+    conn->client_fd  = client;
+    conn->origin_fd  = -1;
+    conn->references = 1;
 
     conn->stm.initial   = NEG_READ;
     conn->stm.states    = socks5_states;
