@@ -156,6 +156,24 @@ START_TEST(test_req_unsupported_atyp)
 }
 END_TEST
 
+START_TEST(test_req_reply_format)
+{
+    uint8_t raw[16];
+    buffer  buf;
+    buffer_init(&buf, N(raw), raw);
+
+    fill_request_reply(&buf, SOCKS5_REP_CMD_NOT_SUPPORTED);
+
+    /* VER REP RSV ATYP=IPv4 BND.ADDR(4)=0 BND.PORT(2)=0 -> 10 bytes */
+    uint8_t expected[] = {0x05, 0x07, 0x00, 0x01, 0, 0, 0, 0, 0, 0};
+    for (size_t i = 0; i < N(expected); i++) {
+        ck_assert(buffer_can_read(&buf));
+        ck_assert_uint_eq(expected[i], buffer_read(&buf));
+    }
+    ck_assert(!buffer_can_read(&buf));
+}
+END_TEST
+
 Suite *suite(void)
 {
     Suite *s  = suite_create("request");
@@ -168,6 +186,7 @@ Suite *suite(void)
     tcase_add_test(tc, test_req_bad_version);
     tcase_add_test(tc, test_req_bad_rsv);
     tcase_add_test(tc, test_req_unsupported_atyp);
+    tcase_add_test(tc, test_req_reply_format);
     suite_add_tcase(s, tc);
 
     return s;

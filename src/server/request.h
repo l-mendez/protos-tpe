@@ -20,7 +20,7 @@
  * parciales en cualquier punto del mensaje.
  *
  * El parser es agnóstico a la política: registra CMD y ATYP pero no rechaza
- * comandos; quién consume decide qué soporta (este TP solo necesita CONNECT).
+ * comandos; quién consume decide qué soporta (sólo CONNECT, por ahora).
  */
 
 typedef enum {
@@ -42,6 +42,12 @@ typedef enum {
 
 /* CMD (RFC 1928 §4). */
 #define SOCKS5_CMD_CONNECT 0x01
+
+/* REP: códigos de respuesta del request (RFC 1928 §6). */
+#define SOCKS5_REP_SUCCESS           0x00
+#define SOCKS5_REP_GENERAL_FAILURE   0x01
+#define SOCKS5_REP_CMD_NOT_SUPPORTED 0x07
+#define SOCKS5_REP_ATYP_NOT_SUPPORTED 0x08
 
 struct socks5_request {
     req_state state; /* el progreso vive acá, explícito */
@@ -66,5 +72,13 @@ request_parser_feed(struct socks5_request *p, buffer *b);
 /** true si el request se parseó por completo */
 bool
 request_done(const struct socks5_request *p);
+
+/**
+ * Escribe una respuesta de request (RFC 1928 §6) en `b` con el código `rep` y un
+ * BND.ADDR/PORT nulo (0.0.0.0:0, ATYP IPv4). Pensado para las respuestas de
+ * error: 10 bytes VER REP RSV ATYP BND.ADDR BND.PORT.
+ */
+void
+fill_request_reply(buffer *b, uint8_t rep);
 
 #endif

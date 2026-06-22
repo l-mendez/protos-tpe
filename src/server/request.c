@@ -69,3 +69,16 @@ bool request_done(const struct socks5_request *p)
 {
     return p->state == REQ_DONE;
 }
+
+void fill_request_reply(buffer *b, uint8_t rep)
+{
+    buffer_write(b, SOCKS5_VERSION);
+    buffer_write(b, rep);
+    buffer_write(b, 0x00);              /* RSV */
+    buffer_write(b, SOCKS5_ATYP_IPV4);  /* ATYP */
+    for (int i = 0; i < 4; i++) {       /* BND.ADDR = 0.0.0.0 */
+        buffer_write(b, 0x00);
+    }
+    buffer_write(b, 0x00);              /* BND.PORT = 0 */
+    buffer_write(b, 0x00);
+}

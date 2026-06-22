@@ -28,8 +28,8 @@ typedef enum {
     NEG_INVALID      /* error de protocolo */
 } neg_state;
 
-/* Métodos de autenticación relevantes (RFC 1928 §3). GSSAPI no es requerido por
- * la consigna, así que cualquier otro método se ignora. */
+/* Métodos de autenticación relevantes (RFC 1928 §3). GSSAPI no se soporta, así
+ * que cualquier otro método se ignora. */
 #define SOCKS5_METHOD_NOAUTH   0x00
 #define SOCKS5_METHOD_USERPASS 0x02
 #define SOCKS5_METHOD_NONE     0xFF

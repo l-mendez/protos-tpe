@@ -10,11 +10,11 @@
  * socks5.c -- handler de conexión SOCKS5 (RFC 1928) modelado como máquina de
  * estados (stm).
  *
- * En esta ronda se parsean dos fases: la negociación de métodos y el request
- * (CMD/ATYP/dirección/puerto), avanzando entre estados y tolerando lecturas
- * parciales. Resolución de nombres, conexión al origen y relay quedan para
- * rondas siguientes; al completar el request la conexión registra el destino y
- * termina.
+ * Implementa tres fases, tolerando lecturas/escrituras parciales en cada una: la
+ * negociación de métodos, la autenticación usuario/contraseña (RFC 1929) y el
+ * parseo del request (CMD/ATYP/dirección/puerto). Resolución de nombres,
+ * conexión al origen y relay todavía no están implementados; al completar un
+ * CONNECT válido la conexión registra el destino y termina.
  */
 
 /**

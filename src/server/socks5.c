@@ -29,15 +29,16 @@ static inline int would_block(int err)
     return err == EAGAIN || err == EWOULDBLOCK || err == EINTR;
 }
 
-/* Estados de la conexión SOCKS5. Sólo se definen las fases de esta ronda; auth,
- * resolución, conexión al origen y relay se intercalan en rondas siguientes. */
+/* Estados de la conexión SOCKS5. Resolución de nombres, conexión al origen y
+ * relay de datos no están implementados todavía. */
 enum socks5_state {
     NEG_READ = 0, /* leyendo/parseando la negociación de métodos */
     NEG_WRITE,    /* escribiendo la respuesta de método (2 bytes) */
     AUTH_READ,    /* leyendo/parseando las credenciales user/pass (RFC 1929) */
     AUTH_WRITE,   /* escribiendo la respuesta de auth (2 bytes) */
     REQ_READ,     /* leyendo/parseando el request */
-    DONE,         /* terminal: request parseado (placeholder de esta ronda) */
+    REQ_WRITE,    /* escribiendo la respuesta de error del request */
+    DONE,         /* terminal: la conexión terminó, hay que cerrarla */
     ERROR,        /* terminal: error de protocolo o de I/O */
 };
 
@@ -77,15 +78,22 @@ static bool auth_required(void)
 }
 
 /* Valida user/pass contra los usuarios configurados. El arreglo está terminado
- * por un name == NULL (o llega a MAX_USERS): no hay contador explícito. */
-static bool credentials_match(const char *user, const char *pass)
+ * por un name == NULL (o llega a MAX_USERS): no hay contador explícito.
+ *
+ * La comparación es por longitud (memcmp), no strcmp: el usuario y la contraseña
+ * son cadenas con longitud explícita (RFC 1929) que podrían contener un 0x00. Se
+ * rechazan las credenciales vacías. */
+static bool credentials_match(const uint8_t *user, size_t ulen,
+                              const uint8_t *pass, size_t plen)
 {
-    if (configured_users == NULL) {
+    if (configured_users == NULL || ulen == 0 || plen == 0) {
         return false;
     }
     for (int i = 0; i < MAX_USERS && configured_users[i].name != NULL; i++) {
-        if (strcmp(configured_users[i].name, user) == 0) {
-            return strcmp(configured_users[i].pass, pass) == 0;
+        const char *name = configured_users[i].name;
+        const char *pw   = configured_users[i].pass;
+        if (strlen(name) == ulen && memcmp(name, user, ulen) == 0) {
+            return strlen(pw) == plen && memcmp(pw, pass, plen) == 0;
         }
     }
     return false;
@@ -128,12 +136,18 @@ static unsigned negotiation_read(struct selector_key *key)
 {
     struct socks5_conn *c = key->data;
 
-    int closed = fill_read_buffer(key, &c->read_buffer);
-    if (closed != -1) {
-        return (unsigned)closed;
+    /* Parsear primero lo que ya está en el buffer: si el cliente encadenó varios
+     * mensajes en un mismo segmento, esos bytes ya se consumieron del socket y
+     * no generarían otro evento de lectura. Sólo se va al socket si hace falta. */
+    neg_state st = negotiation_parser_feed(&c->neg, &c->read_buffer);
+    if (st != NEG_DONE && st != NEG_INVALID) {
+        int closed = fill_read_buffer(key, &c->read_buffer);
+        if (closed != -1) {
+            return (unsigned)closed;
+        }
+        st = negotiation_parser_feed(&c->neg, &c->read_buffer);
     }
 
-    neg_state st = negotiation_parser_feed(&c->neg, &c->read_buffer);
     if (st == NEG_INVALID) {
         return ERROR;
     }
@@ -189,12 +203,15 @@ static unsigned auth_read(struct selector_key *key)
 {
     struct socks5_conn *c = key->data;
 
-    int closed = fill_read_buffer(key, &c->read_buffer);
-    if (closed != -1) {
-        return (unsigned)closed;
+    auth_state st = auth_parser_feed(&c->auth, &c->read_buffer);
+    if (st != AUTH_DONE && st != AUTH_ERROR) {
+        int closed = fill_read_buffer(key, &c->read_buffer);
+        if (closed != -1) {
+            return (unsigned)closed;
+        }
+        st = auth_parser_feed(&c->auth, &c->read_buffer);
     }
 
-    auth_state st = auth_parser_feed(&c->auth, &c->read_buffer);
     if (st == AUTH_ERROR) {
         return ERROR;
     }
@@ -202,7 +219,8 @@ static unsigned auth_read(struct selector_key *key)
         return AUTH_READ; /* lectura parcial: esperar más datos */
     }
 
-    bool ok = credentials_match((const char *)c->auth.uname, (const char *)c->auth.passwd);
+    bool ok = credentials_match(c->auth.uname, c->auth.ulen,
+                                c->auth.passwd, c->auth.plen);
     c->auth_status = ok ? SOCKS5_AUTH_OK : SOCKS5_AUTH_FAIL;
     fill_auth_reply(&c->write_buffer, c->auth_status);
     if (selector_set_interest_key(key, OP_WRITE) != SELECTOR_SUCCESS) {
@@ -245,40 +263,94 @@ static void request_read_init(const unsigned state, struct selector_key *key)
     request_parser_init(&c->request);
 }
 
+/* Copia el dominio a `dst` reemplazando los bytes no imprimibles por '?': el
+ * dominio lo controla el cliente y se vuelca a un log, así que se neutraliza
+ * cualquier intento de inyección de caracteres de control. */
+static void sanitize_domain(char *dst, size_t cap, const uint8_t *src, size_t n)
+{
+    size_t i = 0;
+    for (; i < n && i + 1 < cap; i++) {
+        dst[i] = (src[i] >= 0x20 && src[i] < 0x7f) ? (char)src[i] : '?';
+    }
+    dst[i] = '\0';
+}
+
+static void log_request_dst(const struct socks5_request *r)
+{
+    if (r->atyp == SOCKS5_ATYP_DOMAIN) {
+        char host[256];
+        sanitize_domain(host, sizeof(host), r->dst_addr, r->addr_len);
+        printf("socks5: CONNECT domain %s:%u\n", host, r->dst_port);
+    } else {
+        char      host[INET6_ADDRSTRLEN] = "?";
+        const int af = (r->atyp == SOCKS5_ATYP_IPV6) ? AF_INET6 : AF_INET;
+        inet_ntop(af, r->dst_addr, host, sizeof(host));
+        printf("socks5: CONNECT %s %s:%u\n",
+               af == AF_INET6 ? "ipv6" : "ipv4", host, r->dst_port);
+    }
+}
+
+/* Encola la respuesta de error del request (RFC 1928 §6) y pasa a escribirla
+ * antes de cerrar, en línea con cómo responden las fases de negociación y auth. */
+static unsigned request_fail(struct selector_key *key, uint8_t rep)
+{
+    struct socks5_conn *c = key->data;
+    fill_request_reply(&c->write_buffer, rep);
+    if (selector_set_interest_key(key, OP_WRITE) != SELECTOR_SUCCESS) {
+        return ERROR;
+    }
+    return REQ_WRITE;
+}
+
 static unsigned request_read(struct selector_key *key)
 {
     struct socks5_conn *c = key->data;
 
-    int closed = fill_read_buffer(key, &c->read_buffer);
-    if (closed != -1) {
-        return (unsigned)closed;
+    req_state st = request_parser_feed(&c->request, &c->read_buffer);
+    if (st != REQ_DONE && st != REQ_ERROR) {
+        int closed = fill_read_buffer(key, &c->read_buffer);
+        if (closed != -1) {
+            return (unsigned)closed;
+        }
+        st = request_parser_feed(&c->request, &c->read_buffer);
     }
 
-    req_state st = request_parser_feed(&c->request, &c->read_buffer);
     if (st == REQ_ERROR) {
-        return ERROR;
+        return request_fail(key, SOCKS5_REP_GENERAL_FAILURE);
     }
     if (st != REQ_DONE) {
         return REQ_READ; /* lectura parcial: esperar más datos */
     }
 
-    /* Esta ronda termina al parsear el request: registramos el destino como
-     * evidencia. Resolver/conectar/relay se suman en rondas siguientes. */
+    /* Sólo se soporta CONNECT (RFC 1928 §4); el resto se rechaza. Resolución de
+     * nombres, conexión al origen y relay aún no existen, así que un CONNECT
+     * válido se registra y la conexión termina. */
     const struct socks5_request *r = &c->request;
-    if (r->atyp == SOCKS5_ATYP_DOMAIN) {
-        char host[256];
-        memcpy(host, r->dst_addr, r->addr_len);
-        host[r->addr_len] = '\0';
-        printf("socks5: request CONNECT cmd=%u atyp=domain dst=%s:%u\n",
-               r->cmd, host, r->dst_port);
-    } else {
-        char            host[INET6_ADDRSTRLEN] = "?";
-        const int       af  = (r->atyp == SOCKS5_ATYP_IPV6) ? AF_INET6 : AF_INET;
-        inet_ntop(af, r->dst_addr, host, sizeof(host));
-        printf("socks5: request CONNECT cmd=%u atyp=%s dst=%s:%u\n",
-               r->cmd, af == AF_INET6 ? "ipv6" : "ipv4", host, r->dst_port);
+    if (r->cmd != SOCKS5_CMD_CONNECT) {
+        printf("socks5: comando no soportado (cmd=%u)\n", r->cmd);
+        return request_fail(key, SOCKS5_REP_CMD_NOT_SUPPORTED);
     }
+
+    log_request_dst(r);
     return DONE;
+}
+
+static unsigned request_write(struct selector_key *key)
+{
+    struct socks5_conn *c = key->data;
+
+    size_t   pending;
+    uint8_t *ptr = buffer_read_ptr(&c->write_buffer, &pending);
+    ssize_t  n   = send(key->fd, ptr, pending, MSG_NOSIGNAL);
+    if (n <= 0) {
+        return (n < 0 && would_block(errno)) ? REQ_WRITE : ERROR;
+    }
+    buffer_read_adv(&c->write_buffer, n);
+
+    if (buffer_can_read(&c->write_buffer)) {
+        return REQ_WRITE; /* escritura parcial: falta vaciar el buffer */
+    }
+    return DONE; /* la respuesta de error ya se envió: cerrar */
 }
 
 /* ---------------------------------------------------------------- stm tables */
@@ -308,6 +380,10 @@ static const struct state_definition socks5_states[] = {
         .on_read_ready = request_read,
     },
     {
+        .state          = REQ_WRITE,
+        .on_write_ready = request_write,
+    },
+    {
         .state = DONE,
     },
     {
@@ -322,22 +398,37 @@ static void socks5_done(struct selector_key *key)
     selector_unregister_fd(key->s, key->fd);
 }
 
-static void socks5_read(struct selector_key *key)
+static bool is_read_state(unsigned st)
 {
-    struct socks5_conn *c  = key->data;
-    unsigned            st = stm_handler_read(&c->stm, key);
+    return st == NEG_READ || st == AUTH_READ || st == REQ_READ;
+}
+
+/* Tras procesar un evento, una fase puede haber dejado en el buffer bytes que ya
+ * pertenecen a la fase siguiente (cliente que encadenó mensajes en un mismo
+ * segmento). El selector es level-triggered sobre el socket y esos bytes ya se
+ * consumieron de él, así que no habría otro evento de lectura para procesarlos:
+ * se vuelve a correr el handler de lectura mientras queden datos en el buffer. */
+static void socks5_advance(struct selector_key *key, unsigned st)
+{
+    struct socks5_conn *c = key->data;
+    while (is_read_state(st) && buffer_can_read(&c->read_buffer)) {
+        st = stm_handler_read(&c->stm, key);
+    }
     if (st == ERROR || st == DONE) {
         socks5_done(key);
     }
 }
 
+static void socks5_read(struct selector_key *key)
+{
+    struct socks5_conn *c = key->data;
+    socks5_advance(key, stm_handler_read(&c->stm, key));
+}
+
 static void socks5_write(struct selector_key *key)
 {
-    struct socks5_conn *c  = key->data;
-    unsigned            st = stm_handler_write(&c->stm, key);
-    if (st == ERROR || st == DONE) {
-        socks5_done(key);
-    }
+    struct socks5_conn *c = key->data;
+    socks5_advance(key, stm_handler_write(&c->stm, key));
 }
 
 static void socks5_close(struct selector_key *key)
@@ -367,7 +458,7 @@ void socks5_passive_accept(struct selector_key *key)
         return;
     }
 
-    struct socks5_conn *conn = malloc(sizeof(*conn));
+    struct socks5_conn *conn = calloc(1, sizeof(*conn));
     if (conn == NULL) {
         close(client);
         return;
