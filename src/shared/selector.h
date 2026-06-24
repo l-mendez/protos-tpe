@@ -161,18 +161,6 @@ selector_status
 selector_unregister_fd(fd_selector   s,
                        const int     fd);
 
-/**
- * desregistra un file descriptor del selector sin invocar handle_close.
- *
- * A diferencia de selector_unregister_fd, NO llama al callback handle_close
- * del handler y por lo tanto NO cierra el descriptor: el caller se queda con
- * el fd abierto y es responsable de cerrarlo.  Útil para hand-off de un fd
- * entre handlers o fases sin perder el socket.
- */
-selector_status
-selector_unregister_fd_noclose(fd_selector   s,
-                               const int     fd);
-
 /** permite cambiar los intereses para un file descriptor */
 selector_status
 selector_set_interest(fd_selector s, int fd, fd_interest i);

@@ -78,12 +78,16 @@ struct socks5_conn {
     struct sockaddr_storage literal_sa; /* storage para la dirección literal */
     int                     last_errno; /* errno del último connect fallido */
     bool                    connected;  /* true si el connect tuvo éxito */
+    pthread_t               resolver_tid;
+    bool                    resolver_running;
 
     /* Relay ----------------------------------------------------------------- */
     bool client_closed;     /* cliente envió EOF */
     bool origin_closed;     /* origen envió EOF */
     bool client_wr_shut;    /* ya se hizo shutdown(client, SHUT_WR) */
     bool origin_wr_shut;    /* ya se hizo shutdown(origin, SHUT_WR) */
+    fd_interest client_interest;
+    fd_interest origin_interest;
 
     /* read_buffer: client → origin.  write_buffer: origin → client. */
     struct buffer read_buffer;
@@ -97,10 +101,8 @@ static size_t active_connections = 0;
 /** Lista doblemente enlazada de conexiones activas, para recorrer en el reaper. */
 static struct socks5_conn *conn_list = NULL;
 
-/** Tiempo máximo (en segundos) sin actividad antes de cerrar una conexión.
- *  MEJORA FUTURA (two-tier): usar un umbral corto para fases de handshake/connect
- *  (NEG..REQ_WRITE) y uno más largo (o desactivado) para RELAY, para no cortar
- *  túneles inactivos legítimos (e.g. SSH). */
+/** Tiempo máximo (en segundos) sin actividad para fases de handshake/connect.
+ *  Los túneles RELAY establecidos no se cosechan por inactividad. */
 #define SOCKS5_INACTIVITY_TIMEOUT 60
 
 /* Inserta un conn al frente de la lista. */
@@ -379,6 +381,15 @@ static unsigned request_fail(struct selector_key *key, uint8_t rep)
     return REQ_WRITE;
 }
 
+static void resolver_join_if_running(struct socks5_conn *c)
+{
+    if (c->resolver_running) {
+        pthread_join(c->resolver_tid, NULL);
+        c->resolver_running = false;
+        c->references--;
+    }
+}
+
 /* Traduce el errno de un connect() fallido al código REP de SOCKS5 (§6). */
 static uint8_t rep_from_errno(int err)
 {
@@ -494,12 +505,12 @@ static unsigned request_read(struct selector_key *key)
         return ERROR;
     }
     c->references++;
-    pthread_t tid;
-    if (pthread_create(&tid, NULL, resolve_run, c) != 0) {
+    c->resolver_running = true;
+    if (pthread_create(&c->resolver_tid, NULL, resolve_run, c) != 0) {
+        c->resolver_running = false;
         c->references--;
         return request_fail(key, SOCKS5_REP_GENERAL_FAILURE);
     }
-    pthread_detach(tid);
     return REQ_RESOLVE;
 }
 
@@ -508,16 +519,30 @@ static unsigned request_read(struct selector_key *key)
 static unsigned request_resolve_done(struct selector_key *key)
 {
     struct socks5_conn *c = key->data;
-    c->references--;
+    resolver_join_if_running(c);
 
     if (c->resolution == NULL) {
-        return request_fail(key, SOCKS5_REP_HOST_UNREACHABLE);
+        return request_fail(key, SOCKS5_REP_GENERAL_FAILURE);
     }
     c->next_addr = c->resolution;
     return request_connect(key);
 }
 
 /* -------------------------------------------------------- connect to origin */
+
+static unsigned request_connect_success(struct selector_key *key)
+{
+    struct socks5_conn *c = key->data;
+    c->connected = true;
+    fill_request_reply(&c->write_buffer, SOCKS5_REP_SUCCESS);
+    if (selector_set_interest(key->s, c->origin_fd, OP_NOOP) != SELECTOR_SUCCESS) {
+        return ERROR;
+    }
+    if (selector_set_interest(key->s, c->client_fd, OP_WRITE) != SELECTOR_SUCCESS) {
+        return ERROR;
+    }
+    return REQ_WRITE;
+}
 
 /* Intenta conectar al siguiente candidato de la lista de direcciones. Si todos
  * fallan, responde con el error SOCKS5 adecuado. */
@@ -544,18 +569,13 @@ static unsigned request_connect(struct selector_key *key)
         if (rc == 0) {
             /* Conexión inmediata (loopback, etc.). */
             c->origin_fd = fd;
-            c->connected = true;
-            fill_request_reply(&c->write_buffer, SOCKS5_REP_SUCCESS);
             if (selector_register(key->s, fd, &socks5_handler, OP_NOOP, c) != SELECTOR_SUCCESS) {
                 close(fd);
                 c->origin_fd = -1;
-                return ERROR;
+                return request_fail(key, SOCKS5_REP_GENERAL_FAILURE);
             }
             c->references++;
-            if (selector_set_interest(key->s, c->client_fd, OP_WRITE) != SELECTOR_SUCCESS) {
-                return ERROR;
-            }
-            return REQ_WRITE;
+            return request_connect_success(key);
         }
         if (errno == EINPROGRESS) {
             c->origin_fd = fd;
@@ -592,16 +612,7 @@ static unsigned request_connecting(struct selector_key *key)
     }
 
     if (so_error == 0) {
-        /* Conexión exitosa. */
-        c->connected = true;
-        fill_request_reply(&c->write_buffer, SOCKS5_REP_SUCCESS);
-        if (selector_set_interest(key->s, c->origin_fd, OP_NOOP) != SELECTOR_SUCCESS) {
-            return ERROR;
-        }
-        if (selector_set_interest(key->s, c->client_fd, OP_WRITE) != SELECTOR_SUCCESS) {
-            return ERROR;
-        }
-        return REQ_WRITE;
+        return request_connect_success(key);
     }
 
     /* Fallo: desregistrar el origin_fd y probar la siguiente dirección. */
@@ -666,7 +677,12 @@ static unsigned relay_update(struct socks5_conn *c)
     if (buffer_can_read(&c->write_buffer) && !c->client_wr_shut) {
         ci = (fd_interest)(ci | OP_WRITE);
     }
-    selector_set_interest(c->selector, c->client_fd, ci);
+    if (ci != c->client_interest) {
+        if (selector_set_interest(c->selector, c->client_fd, ci) != SELECTOR_SUCCESS) {
+            return ERROR;
+        }
+        c->client_interest = ci;
+    }
 
     /* Calcular interés del origin_fd. */
     fd_interest oi = OP_NOOP;
@@ -676,7 +692,12 @@ static unsigned relay_update(struct socks5_conn *c)
     if (buffer_can_read(&c->read_buffer) && !c->origin_wr_shut) {
         oi = (fd_interest)(oi | OP_WRITE);
     }
-    selector_set_interest(c->selector, c->origin_fd, oi);
+    if (oi != c->origin_interest) {
+        if (selector_set_interest(c->selector, c->origin_fd, oi) != SELECTOR_SUCCESS) {
+            return ERROR;
+        }
+        c->origin_interest = oi;
+    }
 
     return RELAY;
 }
@@ -744,8 +765,9 @@ static unsigned relay_write(struct selector_key *key)
     if (n < 0 && would_block(errno)) {
         return RELAY;
     }
-    /* n == 0 (no progreso) o error real: tratar como cierre para evitar
-     * busy-loop en level-triggered (ver nota de diseño del issue). */
+    if (n == 0) {
+        return RELAY;
+    }
     return ERROR;
 }
 
@@ -844,24 +866,26 @@ void socks5_reap_idle(fd_selector s)
     for (struct socks5_conn *c = conn_list; c != NULL; ) {
         struct socks5_conn *nxt = c->next; /* capturar: socks5_done libera c */
 
-        /* REQ_RESOLVE: hilo getaddrinfo en vuelo con una referencia viva; no es
-         * seguro cerrar acá (getaddrinfo trae su propio timeout de sistema).
-         *
-         * MEJORA FUTURA (two-tier): elegir el umbral según stm_state(&c->stm) —
-         * uno corto para fases de handshake/connect (NEG..REQ_WRITE) y otro más
-         * largo (o desactivado) para RELAY, así no se cortan túneles inactivos
-         * legítimos (e.g. SSH, conexiones keep-alive).
-         *
-         * MEJORA FUTURA (reply): en vez de cerrar silenciosamente, enviar una
-         * respuesta SOCKS5 REP_TTL_EXPIRED (0x06) cuando el timeout vence en
-         * fase de connect, para informar al cliente. */
-        if (stm_state(&c->stm) != REQ_RESOLVE &&
-            now - c->last_activity >= SOCKS5_INACTIVITY_TIMEOUT) {
-            struct selector_key key = {
-                .s    = s,
-                .fd   = c->client_fd,
-                .data = c,
-            };
+        unsigned st = stm_state(&c->stm);
+        if (st == REQ_RESOLVE || st == RELAY ||
+            now - c->last_activity < SOCKS5_INACTIVITY_TIMEOUT) {
+            c = nxt;
+            continue;
+        }
+
+        struct selector_key key = {
+            .s    = s,
+            .fd   = c->client_fd,
+            .data = c,
+        };
+        if (st == REQ_CONNECTING) {
+            unsigned next = request_fail(&key, SOCKS5_REP_TTL_EXPIRED);
+            if (next == ERROR || next == DONE) {
+                socks5_done(&key);
+            } else {
+                c->stm.current = &socks5_states[next];
+            }
+        } else if (c->origin_fd == -1) {
             socks5_done(&key);
         }
         c = nxt;
@@ -912,7 +936,9 @@ static void socks5_close(struct selector_key *key)
 {
     struct socks5_conn *c = key->data;
     close(key->fd);
-    if (--c->references <= 0) {
+    c->references--;
+    resolver_join_if_running(c);
+    if (c->references <= 0) {
         conn_list_remove(c);
         if (c->resolution != NULL) {
             freeaddrinfo(c->resolution);
