@@ -78,11 +78,11 @@ bool
 request_done(const struct socks5_request *p);
 
 /**
- * Escribe una respuesta de request (RFC 1928 §6) en `b` con el código `rep` y un
- * BND.ADDR/PORT nulo (0.0.0.0:0, ATYP IPv4). Pensado para las respuestas de
- * error: 10 bytes VER REP RSV ATYP BND.ADDR BND.PORT.
+ * Escribe una respuesta de request (RFC 1928 §6) en `b` con el código `rep`, el
+ * ATYP indicado y un BND.ADDR/PORT nulo. Para IPv4 genera 10 bytes; para IPv6,
+ * 22 bytes. Las respuestas de error usan ATYP IPv4.
  */
 void
-fill_request_reply(buffer *b, uint8_t rep);
+fill_request_reply(buffer *b, uint8_t rep, uint8_t atyp);
 
 #endif

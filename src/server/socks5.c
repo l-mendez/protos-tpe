@@ -77,6 +77,7 @@ struct socks5_conn {
     struct addrinfo         literal_ai; /* entrada sintética para IPv4/IPv6 */
     struct sockaddr_storage literal_sa; /* storage para la dirección literal */
     int                     last_errno; /* errno del último connect fallido */
+    uint8_t                 reply_atyp; /* ATYP para BND.ADDR en respuesta OK */
     bool                    connected;  /* true si el connect tuvo éxito */
     pthread_t               resolver_tid;
     bool                    resolver_running;
@@ -371,7 +372,7 @@ static unsigned request_fail(struct selector_key *key, uint8_t rep)
 {
     struct socks5_conn *c = key->data;
     c->connected = false;
-    fill_request_reply(&c->write_buffer, rep);
+    fill_request_reply(&c->write_buffer, rep, SOCKS5_ATYP_IPV4);
     if (c->origin_fd != -1) {
         selector_set_interest(key->s, c->origin_fd, OP_NOOP);
     }
@@ -400,6 +401,11 @@ static uint8_t rep_from_errno(int err)
         case ETIMEDOUT:                     return SOCKS5_REP_TTL_EXPIRED;
         default:                            return SOCKS5_REP_GENERAL_FAILURE;
     }
+}
+
+static uint8_t reply_atyp_from_family(int family)
+{
+    return family == AF_INET6 ? SOCKS5_ATYP_IPV6 : SOCKS5_ATYP_IPV4;
 }
 
 /* Arma una addrinfo sintética apuntando a literal_sa para destinos IPv4/IPv6
@@ -534,7 +540,7 @@ static unsigned request_connect_success(struct selector_key *key)
 {
     struct socks5_conn *c = key->data;
     c->connected = true;
-    fill_request_reply(&c->write_buffer, SOCKS5_REP_SUCCESS);
+    fill_request_reply(&c->write_buffer, SOCKS5_REP_SUCCESS, c->reply_atyp);
     if (selector_set_interest(key->s, c->origin_fd, OP_NOOP) != SELECTOR_SUCCESS) {
         return ERROR;
     }
@@ -569,6 +575,7 @@ static unsigned request_connect(struct selector_key *key)
         if (rc == 0) {
             /* Conexión inmediata (loopback, etc.). */
             c->origin_fd = fd;
+            c->reply_atyp = reply_atyp_from_family(ai->ai_family);
             if (selector_register(key->s, fd, &socks5_handler, OP_NOOP, c) != SELECTOR_SUCCESS) {
                 close(fd);
                 c->origin_fd = -1;
@@ -579,6 +586,7 @@ static unsigned request_connect(struct selector_key *key)
         }
         if (errno == EINPROGRESS) {
             c->origin_fd = fd;
+            c->reply_atyp = reply_atyp_from_family(ai->ai_family);
             if (selector_register(key->s, fd, &socks5_handler, OP_WRITE, c) != SELECTOR_SUCCESS) {
                 close(fd);
                 c->origin_fd = -1;

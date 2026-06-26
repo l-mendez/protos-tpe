@@ -144,6 +144,24 @@ static struct origin_ctx start_origin(void)
     return (struct origin_ctx){ .listen_fd = fd, .port = ntohs(addr.sin_port) };
 }
 
+static struct origin_ctx start_origin_ipv6(void)
+{
+    int fd = socket(AF_INET6, SOCK_STREAM, 0);
+    ck_assert_int_ge(fd, 0);
+    int one = 1;
+    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+#ifdef IPV6_V6ONLY
+    setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, &one, sizeof(one));
+#endif
+    struct sockaddr_in6 addr = { .sin6_family = AF_INET6 };
+    inet_pton(AF_INET6, "::1", &addr.sin6_addr);
+    ck_assert_int_eq(bind(fd, (struct sockaddr *)&addr, sizeof(addr)), 0);
+    ck_assert_int_eq(listen(fd, 1), 0);
+    socklen_t len = sizeof(addr);
+    ck_assert_int_eq(getsockname(fd, (struct sockaddr *)&addr, &len), 0);
+    return (struct origin_ctx){ .listen_fd = fd, .port = ntohs(addr.sin6_port) };
+}
+
 static void *origin_echo_run(void *arg)
 {
     struct origin_ctx *ctx = arg;
@@ -159,6 +177,58 @@ static void *origin_echo_run(void *arg)
             ssize_t w = write(peer, buf + written, (size_t)(n - written));
             if (w <= 0) break;
             written += w;
+        }
+    }
+    close(peer);
+    return NULL;
+}
+
+struct half_close_origin_ctx {
+    int            listen_fd;
+    unsigned short port;
+    uint8_t        received[128];
+    size_t         received_len;
+    int            saw_eof;
+};
+
+static struct half_close_origin_ctx start_half_close_origin(void)
+{
+    struct origin_ctx base = start_origin();
+    return (struct half_close_origin_ctx){
+        .listen_fd = base.listen_fd,
+        .port      = base.port,
+    };
+}
+
+static void *origin_reply_after_eof_run(void *arg)
+{
+    struct half_close_origin_ctx *ctx = arg;
+    int peer = accept(ctx->listen_fd, NULL, NULL);
+    if (peer < 0) {
+        return NULL;
+    }
+
+    uint8_t buf[64];
+    ssize_t n;
+    while ((n = read(peer, buf, sizeof(buf))) > 0) {
+        size_t copy = (size_t)n;
+        if (copy > sizeof(ctx->received) - ctx->received_len) {
+            copy = sizeof(ctx->received) - ctx->received_len;
+        }
+        memcpy(ctx->received + ctx->received_len, buf, copy);
+        ctx->received_len += copy;
+    }
+
+    if (n == 0) {
+        static const char reply[] = "origin saw eof";
+        ctx->saw_eof = 1;
+        size_t written = 0;
+        while (written < sizeof(reply) - 1) {
+            ssize_t w = write(peer, reply + written, sizeof(reply) - 1 - written);
+            if (w <= 0) {
+                break;
+            }
+            written += (size_t)w;
         }
     }
     close(peer);
@@ -193,13 +263,44 @@ static void send_connect_ipv4(int client, unsigned short port)
     ck_assert_int_eq(write(client, req, sizeof(req)), (ssize_t)sizeof(req));
 }
 
-/* Read the SOCKS5 reply (10 bytes) and return the REP field. */
+/* Send an IPv6 CONNECT request for [::1]:<port>. */
+static void send_connect_ipv6_loopback(int client, unsigned short port)
+{
+    uint8_t req[4 + 16 + 2] = { 0x05, 0x01, 0x00, 0x04 };
+    ck_assert_int_eq(inet_pton(AF_INET6, "::1", &req[4]), 1);
+    encode_port(&req[20], port);
+    ck_assert_int_eq(write(client, req, sizeof(req)), (ssize_t)sizeof(req));
+}
+
+struct socks5_reply_info {
+    uint8_t rep;
+    uint8_t atyp;
+};
+
+static struct socks5_reply_info read_socks5_reply_info(int client)
+{
+    uint8_t header[4];
+    read_exactly(client, header, sizeof(header));
+    ck_assert_uint_eq(0x05, header[0]);
+    ck_assert_uint_eq(0x00, header[2]);
+
+    size_t addr_len = 0;
+    if (header[3] == SOCKS5_ATYP_IPV4) {
+        addr_len = 4;
+    } else if (header[3] == SOCKS5_ATYP_IPV6) {
+        addr_len = 16;
+    }
+    ck_assert_uint_ne(0, addr_len);
+
+    uint8_t addr_and_port[16 + 2];
+    read_exactly(client, addr_and_port, addr_len + 2);
+    return (struct socks5_reply_info){ .rep = header[1], .atyp = header[3] };
+}
+
+/* Read the SOCKS5 reply and return the REP field. */
 static uint8_t read_socks5_reply(int client)
 {
-    uint8_t rep[10];
-    read_exactly(client, rep, sizeof(rep));
-    ck_assert_uint_eq(0x05, rep[0]);
-    return rep[1];
+    return read_socks5_reply_info(client).rep;
 }
 
 /* ======================================================== tests ========= */
@@ -608,6 +709,88 @@ START_TEST(test_socks5_relay_echo)
 }
 END_TEST
 
+START_TEST(test_socks5_ipv6_connect_reply_uses_ipv6_atyp)
+{
+    socks5_set_users(&no_users);
+
+    struct origin_ctx origin = start_origin_ipv6();
+    pthread_t origin_tid;
+    ck_assert_int_eq(pthread_create(&origin_tid, NULL, origin_echo_run, &origin), 0);
+
+    int            passive;
+    unsigned short port = start_server(&passive);
+
+    test_stop = 0;
+    pthread_t loop;
+    ck_assert_int_eq(pthread_create(&loop, NULL, run_selector, NULL), 0);
+
+    int client = connect_to(port);
+    negotiate_noauth(client);
+    send_connect_ipv6_loopback(client, origin.port);
+
+    struct socks5_reply_info reply = read_socks5_reply_info(client);
+    ck_assert_uint_eq(SOCKS5_REP_SUCCESS, reply.rep);
+    ck_assert_uint_eq(SOCKS5_ATYP_IPV6, reply.atyp);
+
+    close(client);
+    test_stop = 1;
+    pthread_join(loop, NULL);
+    pthread_join(origin_tid, NULL);
+    close(origin.listen_fd);
+    selector_destroy(test_selector);
+    selector_close();
+    close(passive);
+}
+END_TEST
+
+START_TEST(test_socks5_relay_propagates_client_half_close)
+{
+    socks5_set_users(&no_users);
+
+    struct half_close_origin_ctx origin = start_half_close_origin();
+    pthread_t origin_tid;
+    ck_assert_int_eq(pthread_create(&origin_tid, NULL, origin_reply_after_eof_run, &origin), 0);
+
+    int            passive;
+    unsigned short port = start_server(&passive);
+
+    test_stop = 0;
+    pthread_t loop;
+    ck_assert_int_eq(pthread_create(&loop, NULL, run_selector, NULL), 0);
+
+    int client = connect_to(port);
+    negotiate_noauth(client);
+    send_connect_ipv4(client, origin.port);
+    ck_assert_uint_eq(SOCKS5_REP_SUCCESS, read_socks5_reply(client));
+
+    const char *msg = "half-close payload";
+    size_t msg_len = strlen(msg);
+    ck_assert_int_eq(write(client, msg, msg_len), (ssize_t)msg_len);
+    ck_assert_int_eq(shutdown(client, SHUT_WR), 0);
+
+    static const char expected_reply[] = "origin saw eof";
+    uint8_t reply[sizeof(expected_reply) - 1];
+    read_exactly(client, reply, sizeof(reply));
+    ck_assert_int_eq(memcmp(expected_reply, reply, sizeof(reply)), 0);
+
+    uint8_t scratch[8];
+    ck_assert_int_eq(read(client, scratch, sizeof(scratch)), 0);
+
+    pthread_join(origin_tid, NULL);
+    ck_assert_int_eq(origin.saw_eof, 1);
+    ck_assert_uint_eq(msg_len, origin.received_len);
+    ck_assert_int_eq(memcmp(msg, origin.received, msg_len), 0);
+
+    close(client);
+    test_stop = 1;
+    pthread_join(loop, NULL);
+    close(origin.listen_fd);
+    selector_destroy(test_selector);
+    selector_close();
+    close(passive);
+}
+END_TEST
+
 /* CONNECT to a closed port: should get SOCKS5_REP_CONNECTION_REFUSED. */
 START_TEST(test_socks5_connect_refused)
 {
@@ -977,6 +1160,8 @@ static Suite *socks5_suite(void)
     tcase_add_test(tc, test_socks5_request_error_replies);
     tcase_add_test(tc, test_socks5_non_connect_rejected);
     tcase_add_test(tc, test_socks5_relay_echo);
+    tcase_add_test(tc, test_socks5_ipv6_connect_reply_uses_ipv6_atyp);
+    tcase_add_test(tc, test_socks5_relay_propagates_client_half_close);
     tcase_add_test(tc, test_socks5_connect_refused);
     tcase_add_test(tc, test_socks5_fqdn_resolution_failure_is_general_failure);
     tcase_add_test(tc, test_socks5_fqdn_connect_and_relay);
