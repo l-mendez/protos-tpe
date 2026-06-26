@@ -10,11 +10,10 @@
  * socks5.c -- handler de conexión SOCKS5 (RFC 1928) modelado como máquina de
  * estados (stm).
  *
- * Implementa tres fases, tolerando lecturas/escrituras parciales en cada una: la
- * negociación de métodos, la autenticación usuario/contraseña (RFC 1929) y el
- * parseo del request (CMD/ATYP/dirección/puerto). Resolución de nombres,
- * conexión al origen y relay todavía no están implementados; al completar un
- * CONNECT válido la conexión registra el destino y termina.
+ * Implementa la negociación de métodos, autenticación usuario/contraseña
+ * (RFC 1929), parseo del request, resolución DNS (en hilo aparte para FQDNs),
+ * conexión no bloqueante al origen con reintento de direcciones y relay
+ * full-duplex del tráfico entre cliente y origen.
  */
 
 /**
@@ -35,5 +34,13 @@ socks5_set_users(const struct socks5args *args);
 /** Cantidad de conexiones SOCKS5 actualmente registradas (para drenar al apagar). */
 size_t
 socks5_active_connections(void);
+
+/**
+ * Recorre las conexiones activas y cierra las que llevan más de
+ * SOCKS5_INACTIVITY_TIMEOUT segundos sin actividad.  Debe llamarse desde el
+ * loop principal después de cada selector_select.
+ */
+void
+socks5_reap_idle(fd_selector s);
 
 #endif

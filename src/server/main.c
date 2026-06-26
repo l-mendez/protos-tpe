@@ -47,6 +47,7 @@ main(const int argc, char **argv)
     int          ret      = 1;
     const char  *err      = NULL;
     fd_selector  selector = NULL;
+    bool         forced_shutdown = false;
 
     int passive = server_setup_passive(args.socks_addr, args.socks_port);
     if (passive < 0) {
@@ -88,6 +89,8 @@ main(const int argc, char **argv)
             goto finally;
         }
 
+        socks5_reap_idle(selector);
+
         if (terminate) {
             if (accepting) {
                 /* Apagado ordenado: dejar de aceptar nuevas conexiones y
@@ -100,7 +103,11 @@ main(const int argc, char **argv)
                        socks5_active_connections());
             }
             /* Salir cuando no quedan conexiones, o si llega una segunda señal. */
-            if (socks5_active_connections() == 0 || terminate > 1) {
+            if (terminate > 1) {
+                forced_shutdown = true;
+                break;
+            }
+            if (socks5_active_connections() == 0) {
                 break;
             }
         }
@@ -111,7 +118,9 @@ finally:
     if (err != NULL) {
         fprintf(stderr, "%s\n", err);
     }
-    if (selector != NULL) {
+    /* En apagado forzado puede haber resolvers en getaddrinfo() que todavía
+     * notifiquen usando este selector; al salir del proceso el SO libera todo. */
+    if (selector != NULL && !forced_shutdown) {
         selector_destroy(selector);
     }
     selector_close();
