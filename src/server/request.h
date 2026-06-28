@@ -3,6 +3,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <sys/socket.h>
 
 #include "buffer.h"
 
@@ -84,5 +85,12 @@ request_done(const struct socks5_request *p);
  */
 void
 fill_request_reply(buffer *b, uint8_t rep, uint8_t atyp);
+
+/**
+ * Escribe una respuesta de request (RFC 1928 §6) usando el BND.ADDR/PORT real
+ * indicado por `addr`. Retorna false si la familia no es IPv4/IPv6.
+ */
+bool
+fill_request_reply_addr(buffer *b, uint8_t rep, const struct sockaddr *addr);
 
 #endif

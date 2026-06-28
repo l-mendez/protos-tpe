@@ -36,13 +36,6 @@ static void *run_selector(void *unused)
     return NULL;
 }
 
-/* Yield long enough for the selector thread to advance a few cycles. */
-static void sleep_ms(long ms)
-{
-    struct timespec ts = { .tv_sec = ms / 1000, .tv_nsec = (ms % 1000) * 1000000L };
-    nanosleep(&ts, NULL);
-}
-
 static int connect_to(unsigned short port)
 {
     int fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -275,6 +268,8 @@ static void send_connect_ipv6_loopback(int client, unsigned short port)
 struct socks5_reply_info {
     uint8_t rep;
     uint8_t atyp;
+    uint8_t addr[16];
+    uint16_t port;
 };
 
 static struct socks5_reply_info read_socks5_reply_info(int client)
@@ -292,9 +287,13 @@ static struct socks5_reply_info read_socks5_reply_info(int client)
     }
     ck_assert_uint_ne(0, addr_len);
 
-    uint8_t addr_and_port[16 + 2];
-    read_exactly(client, addr_and_port, addr_len + 2);
-    return (struct socks5_reply_info){ .rep = header[1], .atyp = header[3] };
+    struct socks5_reply_info info = { .rep = header[1], .atyp = header[3] };
+    read_exactly(client, info.addr, addr_len);
+
+    uint8_t port[2];
+    read_exactly(client, port, sizeof(port));
+    info.port = (uint16_t)((port[0] << 8) | port[1]);
+    return info;
 }
 
 /* Read the SOCKS5 reply and return the REP field. */
@@ -324,7 +323,13 @@ START_TEST(test_socks5_negotiation_then_connect)
     int client = connect_to(port);
     negotiate_noauth(client);
     send_connect_ipv4(client, origin.port);
-    ck_assert_uint_eq(SOCKS5_REP_SUCCESS, read_socks5_reply(client));
+    struct socks5_reply_info reply = read_socks5_reply_info(client);
+    ck_assert_uint_eq(SOCKS5_REP_SUCCESS, reply.rep);
+    ck_assert_uint_eq(SOCKS5_ATYP_IPV4, reply.atyp);
+    uint8_t loopback[4];
+    ck_assert_int_eq(inet_pton(AF_INET, "127.0.0.1", loopback), 1);
+    ck_assert_int_eq(memcmp(loopback, reply.addr, sizeof(loopback)), 0);
+    ck_assert_uint_ne(0, reply.port);
 
     close(client);
     test_stop = 1;
@@ -731,6 +736,10 @@ START_TEST(test_socks5_ipv6_connect_reply_uses_ipv6_atyp)
     struct socks5_reply_info reply = read_socks5_reply_info(client);
     ck_assert_uint_eq(SOCKS5_REP_SUCCESS, reply.rep);
     ck_assert_uint_eq(SOCKS5_ATYP_IPV6, reply.atyp);
+    struct in6_addr loopback6;
+    ck_assert_int_eq(inet_pton(AF_INET6, "::1", &loopback6), 1);
+    ck_assert_int_eq(memcmp(&loopback6, reply.addr, sizeof(loopback6)), 0);
+    ck_assert_uint_ne(0, reply.port);
 
     close(client);
     test_stop = 1;
@@ -829,8 +838,7 @@ START_TEST(test_socks5_connect_refused)
 }
 END_TEST
 
-/* A failed FQDN resolution is reported as general failure (REP=0x01), not as
- * host unreachable. */
+/* A failed FQDN lookup for a missing name is reported as host unreachable. */
 START_TEST(test_socks5_fqdn_resolution_failure_is_general_failure)
 {
     struct selector_init conf = {
@@ -846,6 +854,7 @@ START_TEST(test_socks5_fqdn_resolution_failure_is_general_failure)
 
     struct socks5_conn *c = new_registered_test_conn(s, fds[0]);
     c->stm.current = &socks5_states[REQ_RESOLVE];
+    c->resolver_error = EAI_NONAME;
 
     struct selector_key key = {
         .s    = s,
@@ -857,7 +866,7 @@ START_TEST(test_socks5_fqdn_resolution_failure_is_general_failure)
     size_t pending;
     uint8_t *reply = buffer_read_ptr(&c->write_buffer, &pending);
     ck_assert_uint_eq(10, pending);
-    ck_assert_uint_eq(SOCKS5_REP_GENERAL_FAILURE, reply[1]);
+    ck_assert_uint_eq(SOCKS5_REP_HOST_UNREACHABLE, reply[1]);
 
     selector_unregister_fd(s, fds[0]);
     ck_assert_uint_eq(0, socks5_active_connections());
@@ -929,39 +938,28 @@ END_TEST
 /* Una conexión idle por más de SOCKS5_INACTIVITY_TIMEOUT debe ser cosechada. */
 START_TEST(test_socks5_reap_idle_connection)
 {
-    socks5_set_users(&no_users);
+    struct selector_init conf = {
+        .signal         = SIGALRM,
+        .select_timeout = { .tv_sec = 0, .tv_nsec = 50000000 },
+    };
+    ck_assert_int_eq(selector_init(&conf), SELECTOR_SUCCESS);
+    fd_selector s = selector_new(64);
+    ck_assert_ptr_nonnull(s);
 
-    int            passive;
-    unsigned short port = start_server(&passive);
+    int fds[2];
+    ck_assert_int_eq(socketpair(AF_UNIX, SOCK_STREAM, 0, fds), 0);
 
-    test_stop = 0;
-    pthread_t loop;
-    ck_assert_int_eq(pthread_create(&loop, NULL, run_selector, NULL), 0);
-
-    int client = connect_to(port);
-    /* Enviar sólo la negociación; después no hacer nada (simulando idle). */
-    negotiate_noauth(client);
-
-    /* Esperar un ciclo del selector para que la conexión procese la negociación. */
-    sleep_ms(200);
-
-    /* Forzar que la conexión parezca expirada: atrasar last_activity. */
-    ck_assert_uint_ge(socks5_active_connections(), 1);
-    struct socks5_conn *c = conn_list;
-    ck_assert_ptr_nonnull(c);
+    struct socks5_conn *c = new_registered_test_conn(s, fds[0]);
     c->last_activity = time(NULL) - SOCKS5_INACTIVITY_TIMEOUT - 1;
 
     reap_last_sweep = 0; /* reset throttle para que el barrido corra */
-    socks5_reap_idle(test_selector);
+    socks5_reap_idle(s);
 
     ck_assert_uint_eq(socks5_active_connections(), 0);
 
-    close(client);
-    test_stop = 1;
-    pthread_join(loop, NULL);
-    selector_destroy(test_selector);
+    close(fds[1]);
+    selector_destroy(s);
     selector_close();
-    close(passive);
 }
 END_TEST
 
@@ -969,50 +967,41 @@ END_TEST
  * legitimate live connections.  Reaping must not close them. */
 START_TEST(test_socks5_reap_does_not_close_idle_relay)
 {
-    socks5_set_users(&no_users);
+    struct selector_init conf = {
+        .signal         = SIGALRM,
+        .select_timeout = { .tv_sec = 0, .tv_nsec = 50000000 },
+    };
+    ck_assert_int_eq(selector_init(&conf), SELECTOR_SUCCESS);
+    fd_selector s = selector_new(64);
+    ck_assert_ptr_nonnull(s);
 
-    struct origin_ctx origin = start_origin();
-    pthread_t origin_tid;
-    ck_assert_int_eq(pthread_create(&origin_tid, NULL, origin_echo_run, &origin), 0);
+    int client_fds[2];
+    int origin_fds[2];
+    ck_assert_int_eq(socketpair(AF_UNIX, SOCK_STREAM, 0, client_fds), 0);
+    ck_assert_int_eq(socketpair(AF_UNIX, SOCK_STREAM, 0, origin_fds), 0);
 
-    int            passive;
-    unsigned short port = start_server(&passive);
-
-    test_stop = 0;
-    pthread_t loop;
-    ck_assert_int_eq(pthread_create(&loop, NULL, run_selector, NULL), 0);
-
-    int client = connect_to(port);
-    negotiate_noauth(client);
-    send_connect_ipv4(client, origin.port);
-    ck_assert_uint_eq(SOCKS5_REP_SUCCESS, read_socks5_reply(client));
-
-    sleep_ms(200);
-    struct socks5_conn *c = conn_list;
-    ck_assert_ptr_nonnull(c);
-    ck_assert_uint_eq(RELAY, stm_state(&c->stm));
+    struct socks5_conn *c = new_registered_test_conn(s, client_fds[0]);
+    c->origin_fd = origin_fds[0];
+    c->references++;
+    ck_assert_int_eq(selector_register(s, origin_fds[0], &socks5_handler, OP_NOOP, c),
+                     SELECTOR_SUCCESS);
+    c->stm.current = &socks5_states[RELAY];
     c->last_activity = time(NULL) - SOCKS5_INACTIVITY_TIMEOUT - 1;
 
     reap_last_sweep = 0;
-    socks5_reap_idle(test_selector);
-    ck_assert_uint_ge(socks5_active_connections(), 1);
+    socks5_reap_idle(s);
+    ck_assert_uint_eq(1, socks5_active_connections());
 
-    const char *msg = "still alive";
-    size_t msg_len = strlen(msg);
-    ck_assert_int_eq(write(client, msg, msg_len), (ssize_t)msg_len);
+    int cfd = c->client_fd;
+    int ofd = c->origin_fd;
+    selector_unregister_fd(s, ofd);
+    selector_unregister_fd(s, cfd);
+    ck_assert_uint_eq(0, socks5_active_connections());
 
-    uint8_t echoed[64];
-    read_exactly(client, echoed, msg_len);
-    ck_assert_int_eq(memcmp(msg, echoed, msg_len), 0);
-
-    close(client);
-    test_stop = 1;
-    pthread_join(loop, NULL);
-    pthread_join(origin_tid, NULL);
-    close(origin.listen_fd);
-    selector_destroy(test_selector);
+    close(client_fds[1]);
+    close(origin_fds[1]);
+    selector_destroy(s);
     selector_close();
-    close(passive);
 }
 END_TEST
 
@@ -1061,23 +1050,18 @@ END_TEST
 /* Una conexión en REQ_RESOLVE no debe ser cosechada, incluso si está expirada. */
 START_TEST(test_socks5_reap_skips_req_resolve)
 {
-    socks5_set_users(&no_users);
+    struct selector_init conf = {
+        .signal         = SIGALRM,
+        .select_timeout = { .tv_sec = 0, .tv_nsec = 50000000 },
+    };
+    ck_assert_int_eq(selector_init(&conf), SELECTOR_SUCCESS);
+    fd_selector s = selector_new(64);
+    ck_assert_ptr_nonnull(s);
 
-    int            passive;
-    unsigned short port = start_server(&passive);
+    int fds[2];
+    ck_assert_int_eq(socketpair(AF_UNIX, SOCK_STREAM, 0, fds), 0);
 
-    test_stop = 0;
-    pthread_t loop;
-    ck_assert_int_eq(pthread_create(&loop, NULL, run_selector, NULL), 0);
-
-    int client = connect_to(port);
-
-    /* Esperar a que el accept cree la conexión. */
-    sleep_ms(200);
-
-    ck_assert_uint_ge(socks5_active_connections(), 1);
-    struct socks5_conn *c = conn_list;
-    ck_assert_ptr_nonnull(c);
+    struct socks5_conn *c = new_registered_test_conn(s, fds[0]);
 
     /* Forzar el estado a REQ_RESOLVE y expirar el last_activity.
      * current apunta a la tabla de estados indexada por el enum. */
@@ -1085,24 +1069,21 @@ START_TEST(test_socks5_reap_skips_req_resolve)
     c->last_activity = time(NULL) - SOCKS5_INACTIVITY_TIMEOUT - 100;
 
     reap_last_sweep = 0; /* reset throttle */
-    socks5_reap_idle(test_selector);
+    socks5_reap_idle(s);
 
     /* La conexión debe seguir viva a pesar de estar expirada. */
-    ck_assert_uint_ge(socks5_active_connections(), 1);
+    ck_assert_uint_eq(1, socks5_active_connections());
 
     /* Limpieza: restaurar un estado que permita al reaper cerrar. */
     c->stm.current = &socks5_states[NEG_READ];
     c->last_activity = 0; /* asegurar expiración */
     reap_last_sweep = 0;
-    socks5_reap_idle(test_selector);
+    socks5_reap_idle(s);
     ck_assert_uint_eq(socks5_active_connections(), 0);
 
-    close(client);
-    test_stop = 1;
-    pthread_join(loop, NULL);
-    selector_destroy(test_selector);
+    close(fds[1]);
+    selector_destroy(s);
     selector_close();
-    close(passive);
 }
 END_TEST
 

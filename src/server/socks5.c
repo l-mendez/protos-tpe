@@ -77,7 +77,7 @@ struct socks5_conn {
     struct addrinfo         literal_ai; /* entrada sintética para IPv4/IPv6 */
     struct sockaddr_storage literal_sa; /* storage para la dirección literal */
     int                     last_errno; /* errno del último connect fallido */
-    uint8_t                 reply_atyp; /* ATYP para BND.ADDR en respuesta OK */
+    int                     resolver_error; /* getaddrinfo() rc, si falló */
     bool                    connected;  /* true si el connect tuvo éxito */
     pthread_t               resolver_tid;
     bool                    resolver_running;
@@ -403,9 +403,17 @@ static uint8_t rep_from_errno(int err)
     }
 }
 
-static uint8_t reply_atyp_from_family(int family)
+static uint8_t rep_from_gai_error(int err)
 {
-    return family == AF_INET6 ? SOCKS5_ATYP_IPV6 : SOCKS5_ATYP_IPV4;
+    switch (err) {
+        case EAI_NONAME:
+#if defined(EAI_NODATA) && EAI_NODATA != EAI_NONAME
+        case EAI_NODATA:
+#endif
+            return SOCKS5_REP_HOST_UNREACHABLE;
+        default:
+            return SOCKS5_REP_GENERAL_FAILURE;
+    }
 }
 
 /* Arma una addrinfo sintética apuntando a literal_sa para destinos IPv4/IPv6
@@ -458,6 +466,7 @@ static void *resolve_run(void *arg)
         .ai_protocol = IPPROTO_TCP,
     };
     int rc = getaddrinfo(host, port, &hints, &c->resolution);
+    c->resolver_error = rc;
     if (rc != 0) {
         c->resolution = NULL;
     }
@@ -528,7 +537,7 @@ static unsigned request_resolve_done(struct selector_key *key)
     resolver_join_if_running(c);
 
     if (c->resolution == NULL) {
-        return request_fail(key, SOCKS5_REP_GENERAL_FAILURE);
+        return request_fail(key, rep_from_gai_error(c->resolver_error));
     }
     c->next_addr = c->resolution;
     return request_connect(key);
@@ -539,8 +548,18 @@ static unsigned request_resolve_done(struct selector_key *key)
 static unsigned request_connect_success(struct selector_key *key)
 {
     struct socks5_conn *c = key->data;
+
+    struct sockaddr_storage local;
+    socklen_t               local_len = sizeof(local);
+    if (getsockname(c->origin_fd, (struct sockaddr *)&local, &local_len) < 0) {
+        return request_fail(key, SOCKS5_REP_GENERAL_FAILURE);
+    }
+
     c->connected = true;
-    fill_request_reply(&c->write_buffer, SOCKS5_REP_SUCCESS, c->reply_atyp);
+    if (!fill_request_reply_addr(&c->write_buffer, SOCKS5_REP_SUCCESS,
+                                 (const struct sockaddr *)&local)) {
+        return request_fail(key, SOCKS5_REP_GENERAL_FAILURE);
+    }
     if (selector_set_interest(key->s, c->origin_fd, OP_NOOP) != SELECTOR_SUCCESS) {
         return ERROR;
     }
@@ -575,7 +594,6 @@ static unsigned request_connect(struct selector_key *key)
         if (rc == 0) {
             /* Conexión inmediata (loopback, etc.). */
             c->origin_fd = fd;
-            c->reply_atyp = reply_atyp_from_family(ai->ai_family);
             if (selector_register(key->s, fd, &socks5_handler, OP_NOOP, c) != SELECTOR_SUCCESS) {
                 close(fd);
                 c->origin_fd = -1;
@@ -586,7 +604,6 @@ static unsigned request_connect(struct selector_key *key)
         }
         if (errno == EINPROGRESS) {
             c->origin_fd = fd;
-            c->reply_atyp = reply_atyp_from_family(ai->ai_family);
             if (selector_register(key->s, fd, &socks5_handler, OP_WRITE, c) != SELECTOR_SUCCESS) {
                 close(fd);
                 c->origin_fd = -1;

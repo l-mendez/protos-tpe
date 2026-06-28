@@ -1,5 +1,7 @@
 #include "request.h"
 
+#include <netinet/in.h>
+
 #define SOCKS5_VERSION 0x05
 
 void request_parser_init(struct socks5_request *p)
@@ -87,4 +89,39 @@ void fill_request_reply(buffer *b, uint8_t rep, uint8_t atyp)
     }
     buffer_write(b, 0x00);  /* BND.PORT = 0 */
     buffer_write(b, 0x00);
+}
+
+bool fill_request_reply_addr(buffer *b, uint8_t rep, const struct sockaddr *addr)
+{
+    const uint8_t *addr_bytes = NULL;
+    size_t         addr_len   = 0;
+    uint8_t        atyp       = SOCKS5_ATYP_IPV4;
+    uint16_t       port       = 0;
+
+    if (addr->sa_family == AF_INET) {
+        const struct sockaddr_in *sa4 = (const struct sockaddr_in *)addr;
+        atyp       = SOCKS5_ATYP_IPV4;
+        addr_bytes = (const uint8_t *)&sa4->sin_addr;
+        addr_len   = 4;
+        port       = ntohs(sa4->sin_port);
+    } else if (addr->sa_family == AF_INET6) {
+        const struct sockaddr_in6 *sa6 = (const struct sockaddr_in6 *)addr;
+        atyp       = SOCKS5_ATYP_IPV6;
+        addr_bytes = (const uint8_t *)&sa6->sin6_addr;
+        addr_len   = 16;
+        port       = ntohs(sa6->sin6_port);
+    } else {
+        return false;
+    }
+
+    buffer_write(b, SOCKS5_VERSION);
+    buffer_write(b, rep);
+    buffer_write(b, 0x00);
+    buffer_write(b, atyp);
+    for (size_t i = 0; i < addr_len; i++) {
+        buffer_write(b, addr_bytes[i]);
+    }
+    buffer_write(b, (uint8_t)(port >> 8));
+    buffer_write(b, (uint8_t)(port & 0xFF));
+    return true;
 }
