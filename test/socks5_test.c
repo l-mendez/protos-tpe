@@ -1125,6 +1125,62 @@ START_TEST(test_socks5_reap_req_resolve_timeout_sends_failure_reply)
 }
 END_TEST
 
+START_TEST(test_socks5_reap_req_resolve_timeout_releases_pending_job)
+{
+    socks5_resolver_pool_stop(true);
+
+    struct selector_init conf = {
+        .signal         = SIGALRM,
+        .select_timeout = { .tv_sec = 0, .tv_nsec = 50000000 },
+    };
+    ck_assert_int_eq(selector_init(&conf), SELECTOR_SUCCESS);
+    fd_selector s = selector_new(64);
+    ck_assert_ptr_nonnull(s);
+
+    int fds[2];
+    ck_assert_int_eq(socketpair(AF_UNIX, SOCK_STREAM, 0, fds), 0);
+
+    struct socks5_conn *c = new_registered_test_conn(s, fds[0]);
+    struct resolver_job *job = calloc(1, sizeof(*job));
+    ck_assert_ptr_nonnull(job);
+    job->conn = c;
+
+    pthread_mutex_lock(&resolver_mutex);
+    c->resolver_job = job;
+    c->references++;
+    resolver_jobs_in_system = 1;
+    resolver_all_add_locked(job);
+    resolver_queue_push_locked(job);
+    pthread_mutex_unlock(&resolver_mutex);
+
+    c->stm.current = &socks5_states[REQ_RESOLVE];
+    c->last_activity = time(NULL) - SOCKS5_INACTIVITY_TIMEOUT - 1;
+
+    reap_last_sweep = 0;
+    socks5_reap_idle(s);
+    ck_assert_uint_eq(REQ_WRITE, stm_state(&c->stm));
+    ck_assert_uint_eq(0, resolver_jobs_in_system);
+    ck_assert_ptr_null(c->resolver_job);
+    ck_assert_int_eq(1, c->references);
+
+    struct selector_key key = {
+        .s    = s,
+        .fd   = c->client_fd,
+        .data = c,
+    };
+    socks5_write(&key);
+
+    uint8_t reply[10];
+    read_exactly(fds[1], reply, sizeof(reply));
+    ck_assert_uint_eq(SOCKS5_REP_GENERAL_FAILURE, reply[1]);
+    ck_assert_uint_eq(0, socks5_active_connections());
+
+    close(fds[1]);
+    selector_destroy(s);
+    selector_close();
+}
+END_TEST
+
 START_TEST(test_socks5_reap_completed_resolve_without_notification)
 {
     struct selector_init conf = {
@@ -1148,6 +1204,50 @@ START_TEST(test_socks5_reap_completed_resolve_without_notification)
     socks5_reap_idle(s);
     ck_assert_uint_eq(REQ_WRITE, stm_state(&c->stm));
     ck_assert_uint_eq(1, socks5_active_connections());
+
+    struct selector_key key = {
+        .s    = s,
+        .fd   = c->client_fd,
+        .data = c,
+    };
+    socks5_write(&key);
+
+    uint8_t reply[10];
+    read_exactly(fds[1], reply, sizeof(reply));
+    ck_assert_uint_eq(SOCKS5_REP_GENERAL_FAILURE, reply[1]);
+    ck_assert_uint_eq(0, socks5_active_connections());
+
+    close(fds[1]);
+    selector_destroy(s);
+    selector_close();
+}
+END_TEST
+
+START_TEST(test_socks5_reap_completed_resolve_refreshes_activity)
+{
+    struct selector_init conf = {
+        .signal         = SIGALRM,
+        .select_timeout = { .tv_sec = 0, .tv_nsec = 50000000 },
+    };
+    ck_assert_int_eq(selector_init(&conf), SELECTOR_SUCCESS);
+    fd_selector s = selector_new(64);
+    ck_assert_ptr_nonnull(s);
+
+    int fds[2];
+    ck_assert_int_eq(socketpair(AF_UNIX, SOCK_STREAM, 0, fds), 0);
+
+    struct socks5_conn *c = new_registered_test_conn(s, fds[0]);
+    c->stm.current = &socks5_states[REQ_RESOLVE];
+    c->resolver_done = true;
+    c->resolver_error = EAI_NONAME;
+
+    const time_t before = time(NULL);
+    c->last_activity = before - SOCKS5_INACTIVITY_TIMEOUT - 100;
+
+    reap_last_sweep = 0;
+    socks5_reap_idle(s);
+    ck_assert_uint_eq(REQ_WRITE, stm_state(&c->stm));
+    ck_assert_int_ge(c->last_activity, before);
 
     struct selector_key key = {
         .s    = s,
@@ -1201,6 +1301,52 @@ START_TEST(test_socks5_reap_req_write_with_origin_fd)
 }
 END_TEST
 
+START_TEST(test_socks5_relay_compacts_partial_drain_before_interest_update)
+{
+    struct selector_init conf = {
+        .signal         = SIGALRM,
+        .select_timeout = { .tv_sec = 0, .tv_nsec = 50000000 },
+    };
+    ck_assert_int_eq(selector_init(&conf), SELECTOR_SUCCESS);
+    fd_selector s = selector_new(64);
+    ck_assert_ptr_nonnull(s);
+
+    int client_fds[2];
+    int origin_fds[2];
+    ck_assert_int_eq(socketpair(AF_UNIX, SOCK_STREAM, 0, client_fds), 0);
+    ck_assert_int_eq(socketpair(AF_UNIX, SOCK_STREAM, 0, origin_fds), 0);
+
+    struct socks5_conn *c = new_registered_test_conn(s, client_fds[0]);
+    c->origin_fd = origin_fds[0];
+    c->references++;
+    ck_assert_int_eq(selector_register(s, origin_fds[0], &socks5_handler, OP_NOOP, c),
+                     SELECTOR_SUCCESS);
+    c->stm.current = &socks5_states[RELAY];
+
+    size_t space;
+    uint8_t *ptr = buffer_write_ptr(&c->read_buffer, &space);
+    memset(ptr, 'x', space);
+    buffer_write_adv(&c->read_buffer, (ssize_t)space);
+    buffer_read_adv(&c->read_buffer, 16);
+    ck_assert(!buffer_can_write(&c->read_buffer));
+
+    ck_assert_uint_eq(RELAY, relay_update(c));
+    ck_assert(buffer_can_write(&c->read_buffer));
+    ck_assert(c->client_interest & OP_READ);
+
+    int cfd = c->client_fd;
+    int ofd = c->origin_fd;
+    selector_unregister_fd(s, ofd);
+    selector_unregister_fd(s, cfd);
+    ck_assert_uint_eq(0, socks5_active_connections());
+
+    close(client_fds[1]);
+    close(origin_fds[1]);
+    selector_destroy(s);
+    selector_close();
+}
+END_TEST
+
 START_TEST(test_socks5_resolver_pool_rejects_when_capacity_is_exhausted)
 {
     struct selector_init conf = {
@@ -1226,6 +1372,47 @@ START_TEST(test_socks5_resolver_pool_rejects_when_capacity_is_exhausted)
     close(fds[1]);
     selector_destroy(s);
     selector_close();
+}
+END_TEST
+
+START_TEST(test_socks5_rejects_domain_with_embedded_nul)
+{
+    socks5_set_users(&no_users);
+
+    struct origin_ctx origin = start_origin();
+
+    int            passive;
+    unsigned short port = start_server(&passive);
+
+    test_stop = 0;
+    pthread_t loop;
+    ck_assert_int_eq(pthread_create(&loop, NULL, run_selector, NULL), 0);
+
+    int client = connect_to(port);
+    negotiate_noauth(client);
+
+    static const uint8_t domain[] = {
+        'l','o','c','a','l','h','o','s','t','\0','t','r','u','s','t','e','d'
+    };
+    uint8_t req[4 + 1 + sizeof(domain) + 2] = {
+        0x05, 0x01, 0x00, SOCKS5_ATYP_DOMAIN, sizeof(domain)
+    };
+    memcpy(&req[5], domain, sizeof(domain));
+    encode_port(&req[5 + sizeof(domain)], origin.port);
+
+    ck_assert_int_eq(write(client, req, sizeof(req)), (ssize_t)sizeof(req));
+    ck_assert_uint_eq(SOCKS5_REP_GENERAL_FAILURE, read_socks5_reply(client));
+
+    uint8_t scratch[8];
+    ck_assert_int_eq(read(client, scratch, sizeof(scratch)), 0);
+
+    test_stop = 1;
+    pthread_join(loop, NULL);
+    close(client);
+    close(origin.listen_fd);
+    selector_destroy(test_selector);
+    selector_close();
+    close(passive);
 }
 END_TEST
 
@@ -1286,9 +1473,13 @@ static Suite *socks5_suite(void)
     tcase_add_test(tc, test_socks5_reap_closes_idle_relay_after_relay_timeout);
     tcase_add_test(tc, test_socks5_reap_req_connecting_sends_failure_reply);
     tcase_add_test(tc, test_socks5_reap_req_resolve_timeout_sends_failure_reply);
+    tcase_add_test(tc, test_socks5_reap_req_resolve_timeout_releases_pending_job);
     tcase_add_test(tc, test_socks5_reap_completed_resolve_without_notification);
+    tcase_add_test(tc, test_socks5_reap_completed_resolve_refreshes_activity);
     tcase_add_test(tc, test_socks5_reap_req_write_with_origin_fd);
+    tcase_add_test(tc, test_socks5_relay_compacts_partial_drain_before_interest_update);
     tcase_add_test(tc, test_socks5_resolver_pool_rejects_when_capacity_is_exhausted);
+    tcase_add_test(tc, test_socks5_rejects_domain_with_embedded_nul);
     tcase_add_test(tc, test_socks5_close_cancels_pending_resolver_reference);
     suite_add_tcase(s, tc);
     return s;

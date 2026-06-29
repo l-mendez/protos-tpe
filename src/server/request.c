@@ -51,6 +51,10 @@ req_state request_parser_feed(struct socks5_request *p, buffer *b)
                 p->state    = (c == 0) ? REQ_ERROR : REQ_DADDR;
                 break;
             case REQ_DADDR:
+                if (p->atyp == SOCKS5_ATYP_DOMAIN && c == '\0') {
+                    p->state = REQ_ERROR;
+                    break;
+                }
                 p->dst_addr[p->addr_read++] = c;
                 if (p->addr_read == p->addr_len) {
                     p->state = REQ_DPORT;

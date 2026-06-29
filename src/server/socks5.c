@@ -223,6 +223,25 @@ static struct resolver_job *resolver_queue_pop_locked(void)
     return job;
 }
 
+static void resolver_queue_remove_locked(struct resolver_job *job)
+{
+    struct resolver_job **p = &resolver_queue_head;
+    while (*p != NULL) {
+        if (*p == job) {
+            *p = job->next;
+            if (resolver_queue_tail == job) {
+                resolver_queue_tail = NULL;
+                for (struct resolver_job *q = resolver_queue_head; q != NULL; q = q->next) {
+                    resolver_queue_tail = q;
+                }
+            }
+            job->next = NULL;
+            return;
+        }
+        p = &(*p)->next;
+    }
+}
+
 static void *resolver_worker_run(void *unused)
 {
     (void)unused;
@@ -263,6 +282,7 @@ static void *resolver_worker_run(void *unused)
         job->running = false;
         canceled = job->canceled || resolver_pool_stopping;
         struct socks5_conn *c = job->conn;
+        bool release_detached = false;
         if (c != NULL) {
             if (canceled) {
                 if (resolution != NULL) {
@@ -283,10 +303,22 @@ static void *resolver_worker_run(void *unused)
         } else if (resolution != NULL) {
             freeaddrinfo(resolution);
             resolution = NULL;
+            resolver_all_remove_locked(job);
+            resolver_jobs_in_system--;
+            release_detached = true;
+        } else {
+            resolver_all_remove_locked(job);
+            resolver_jobs_in_system--;
+            release_detached = true;
         }
-        job->completed = true;
+        if (!release_detached) {
+            job->completed = true;
+        }
         pthread_mutex_unlock(&resolver_mutex);
 
+        if (release_detached) {
+            free(job);
+        }
         if (notify &&
             selector_notify_block(notify_selector, notify_fd) != SELECTOR_SUCCESS) {
             fprintf(stderr, "socks5: selector_notify_block failed for fd %d\n",
@@ -411,11 +443,25 @@ static bool resolver_queue_job(struct socks5_conn *c, const char *host,
 
 static void resolver_cancel_conn(struct socks5_conn *c)
 {
+    struct resolver_job *free_job = NULL;
+
     pthread_mutex_lock(&resolver_mutex);
-    if (c->resolver_job != NULL) {
-        c->resolver_job->canceled = true;
+    struct resolver_job *job = c->resolver_job;
+    if (job != NULL) {
+        job->canceled = true;
+        job->conn = NULL;
+        c->resolver_job = NULL;
+        c->references--;
+        if (!job->running) {
+            resolver_queue_remove_locked(job);
+            resolver_all_remove_locked(job);
+            resolver_jobs_in_system--;
+            free_job = job;
+        }
     }
     pthread_mutex_unlock(&resolver_mutex);
+
+    free(free_job);
 }
 
 static bool resolver_take_completed(struct socks5_conn *c)
@@ -953,6 +999,9 @@ static unsigned request_write(struct selector_key *key)
  * flags de cierre. Devuelve RELAY si hay algo pendiente, o DONE si se acabó. */
 static unsigned relay_update(struct socks5_conn *c)
 {
+    buffer_compact(&c->read_buffer);
+    buffer_compact(&c->write_buffer);
+
     /* Propagar medio-cierre: si un lado envió EOF y ya drenamos el buffer
      * correspondiente, hacer shutdown(SHUT_WR) del otro lado. */
     if (c->client_closed && !buffer_can_read(&c->read_buffer) && !c->origin_wr_shut) {
@@ -1178,6 +1227,7 @@ void socks5_reap_idle(fd_selector s)
             if (next == ERROR || next == DONE) {
                 socks5_done(&key);
             } else {
+                c->last_activity = now;
                 c->stm.current = &socks5_states[next];
             }
             c = nxt;
@@ -1196,17 +1246,20 @@ void socks5_reap_idle(fd_selector s)
             if (next == ERROR || next == DONE) {
                 socks5_done(&key);
             } else {
+                c->last_activity = now;
                 c->stm.current = &socks5_states[next];
             }
         } else if (st == REQ_RESOLVE) {
             resolver_cancel_conn(c);
             if (c->client_fd == -1) {
                 conn_mark_inactive(c);
+                conn_free_if_unreferenced(c);
             } else {
                 unsigned next = request_fail(&key, SOCKS5_REP_GENERAL_FAILURE);
                 if (next == ERROR || next == DONE) {
                     socks5_done(&key);
                 } else {
+                    c->last_activity = now;
                     c->stm.current = &socks5_states[next];
                 }
             }
@@ -1274,8 +1327,7 @@ static void socks5_close(struct selector_key *key)
     if (c->client_fd == -1 && c->origin_fd == -1) {
         conn_mark_inactive(c);
         resolver_cancel_conn(c);
-    }
-    if (resolver_is_completed(c)) {
+    } else if (resolver_is_completed(c)) {
         resolver_take_completed(c);
     }
     conn_free_if_unreferenced(c);
