@@ -99,6 +99,7 @@ static struct socks5_conn *new_registered_test_conn(fd_selector s,
     c->client_fd  = client_fd;
     c->origin_fd  = -1;
     c->references = 1;
+    c->active_counted = true;
     c->stm.initial   = NEG_READ;
     c->stm.states    = socks5_states;
     c->stm.max_state = ERROR;
@@ -838,7 +839,7 @@ START_TEST(test_socks5_connect_refused)
 }
 END_TEST
 
-/* A failed FQDN lookup for a missing name is reported as host unreachable. */
+/* A failed FQDN lookup for a missing name is reported as general failure. */
 START_TEST(test_socks5_fqdn_resolution_failure_is_general_failure)
 {
     struct selector_init conf = {
@@ -854,6 +855,7 @@ START_TEST(test_socks5_fqdn_resolution_failure_is_general_failure)
 
     struct socks5_conn *c = new_registered_test_conn(s, fds[0]);
     c->stm.current = &socks5_states[REQ_RESOLVE];
+    c->resolver_done = true;
     c->resolver_error = EAI_NONAME;
 
     struct selector_key key = {
@@ -866,7 +868,7 @@ START_TEST(test_socks5_fqdn_resolution_failure_is_general_failure)
     size_t pending;
     uint8_t *reply = buffer_read_ptr(&c->write_buffer, &pending);
     ck_assert_uint_eq(10, pending);
-    ck_assert_uint_eq(SOCKS5_REP_HOST_UNREACHABLE, reply[1]);
+    ck_assert_uint_eq(SOCKS5_REP_GENERAL_FAILURE, reply[1]);
 
     selector_unregister_fd(s, fds[0]);
     ck_assert_uint_eq(0, socks5_active_connections());
@@ -963,9 +965,10 @@ START_TEST(test_socks5_reap_idle_connection)
 }
 END_TEST
 
-/* RELAY tunnels can be idle for longer than the handshake timeout and still be
- * legitimate live connections.  Reaping must not close them. */
-START_TEST(test_socks5_reap_does_not_close_idle_relay)
+/* RELAY tunnels have a larger idle budget than handshakes.  A tunnel that is
+ * older than the 60s handshake timeout but still inside the relay idle timeout
+ * must remain alive. */
+START_TEST(test_socks5_reap_keeps_relay_before_relay_timeout)
 {
     struct selector_init conf = {
         .signal         = SIGALRM,
@@ -996,6 +999,40 @@ START_TEST(test_socks5_reap_does_not_close_idle_relay)
     int ofd = c->origin_fd;
     selector_unregister_fd(s, ofd);
     selector_unregister_fd(s, cfd);
+    ck_assert_uint_eq(0, socks5_active_connections());
+
+    close(client_fds[1]);
+    close(origin_fds[1]);
+    selector_destroy(s);
+    selector_close();
+}
+END_TEST
+
+START_TEST(test_socks5_reap_closes_idle_relay_after_relay_timeout)
+{
+    struct selector_init conf = {
+        .signal         = SIGALRM,
+        .select_timeout = { .tv_sec = 0, .tv_nsec = 50000000 },
+    };
+    ck_assert_int_eq(selector_init(&conf), SELECTOR_SUCCESS);
+    fd_selector s = selector_new(64);
+    ck_assert_ptr_nonnull(s);
+
+    int client_fds[2];
+    int origin_fds[2];
+    ck_assert_int_eq(socketpair(AF_UNIX, SOCK_STREAM, 0, client_fds), 0);
+    ck_assert_int_eq(socketpair(AF_UNIX, SOCK_STREAM, 0, origin_fds), 0);
+
+    struct socks5_conn *c = new_registered_test_conn(s, client_fds[0]);
+    c->origin_fd = origin_fds[0];
+    c->references++;
+    ck_assert_int_eq(selector_register(s, origin_fds[0], &socks5_handler, OP_NOOP, c),
+                     SELECTOR_SUCCESS);
+    c->stm.current = &socks5_states[RELAY];
+    c->last_activity = time(NULL) - SOCKS5_RELAY_IDLE_TIMEOUT - 1;
+
+    reap_last_sweep = 0;
+    socks5_reap_idle(s);
     ck_assert_uint_eq(0, socks5_active_connections());
 
     close(client_fds[1]);
@@ -1047,8 +1084,7 @@ START_TEST(test_socks5_reap_req_connecting_sends_failure_reply)
 }
 END_TEST
 
-/* Una conexión en REQ_RESOLVE no debe ser cosechada, incluso si está expirada. */
-START_TEST(test_socks5_reap_skips_req_resolve)
+START_TEST(test_socks5_reap_req_resolve_timeout_sends_failure_reply)
 {
     struct selector_init conf = {
         .signal         = SIGALRM,
@@ -1063,23 +1099,25 @@ START_TEST(test_socks5_reap_skips_req_resolve)
 
     struct socks5_conn *c = new_registered_test_conn(s, fds[0]);
 
-    /* Forzar el estado a REQ_RESOLVE y expirar el last_activity.
-     * current apunta a la tabla de estados indexada por el enum. */
     c->stm.current = &socks5_states[REQ_RESOLVE];
     c->last_activity = time(NULL) - SOCKS5_INACTIVITY_TIMEOUT - 100;
 
-    reap_last_sweep = 0; /* reset throttle */
-    socks5_reap_idle(s);
-
-    /* La conexión debe seguir viva a pesar de estar expirada. */
-    ck_assert_uint_eq(1, socks5_active_connections());
-
-    /* Limpieza: restaurar un estado que permita al reaper cerrar. */
-    c->stm.current = &socks5_states[NEG_READ];
-    c->last_activity = 0; /* asegurar expiración */
     reap_last_sweep = 0;
     socks5_reap_idle(s);
-    ck_assert_uint_eq(socks5_active_connections(), 0);
+    ck_assert_uint_eq(REQ_WRITE, stm_state(&c->stm));
+    ck_assert_uint_eq(1, socks5_active_connections());
+
+    struct selector_key key = {
+        .s    = s,
+        .fd   = c->client_fd,
+        .data = c,
+    };
+    socks5_write(&key);
+
+    uint8_t reply[10];
+    read_exactly(fds[1], reply, sizeof(reply));
+    ck_assert_uint_eq(SOCKS5_REP_GENERAL_FAILURE, reply[1]);
+    ck_assert_uint_eq(0, socks5_active_connections());
 
     close(fds[1]);
     selector_destroy(s);
@@ -1087,15 +1125,7 @@ START_TEST(test_socks5_reap_skips_req_resolve)
 }
 END_TEST
 
-static void *resolver_noop(void *unused)
-{
-    (void)unused;
-    return NULL;
-}
-
-/* If the client fd is closed while a resolver reference is pending, close must
- * wait for that resolver and release the connection instead of leaking it. */
-START_TEST(test_socks5_close_joins_pending_resolver_reference)
+START_TEST(test_socks5_reap_completed_resolve_without_notification)
 {
     struct selector_init conf = {
         .signal         = SIGALRM,
@@ -1110,14 +1140,119 @@ START_TEST(test_socks5_close_joins_pending_resolver_reference)
 
     struct socks5_conn *c = new_registered_test_conn(s, fds[0]);
     c->stm.current = &socks5_states[REQ_RESOLVE];
+    c->resolver_done = true;
+    c->resolver_error = EAI_NONAME;
+    c->last_activity = time(NULL);
+
+    reap_last_sweep = 0;
+    socks5_reap_idle(s);
+    ck_assert_uint_eq(REQ_WRITE, stm_state(&c->stm));
+    ck_assert_uint_eq(1, socks5_active_connections());
+
+    struct selector_key key = {
+        .s    = s,
+        .fd   = c->client_fd,
+        .data = c,
+    };
+    socks5_write(&key);
+
+    uint8_t reply[10];
+    read_exactly(fds[1], reply, sizeof(reply));
+    ck_assert_uint_eq(SOCKS5_REP_GENERAL_FAILURE, reply[1]);
+    ck_assert_uint_eq(0, socks5_active_connections());
+
+    close(fds[1]);
+    selector_destroy(s);
+    selector_close();
+}
+END_TEST
+
+START_TEST(test_socks5_reap_req_write_with_origin_fd)
+{
+    struct selector_init conf = {
+        .signal         = SIGALRM,
+        .select_timeout = { .tv_sec = 0, .tv_nsec = 50000000 },
+    };
+    ck_assert_int_eq(selector_init(&conf), SELECTOR_SUCCESS);
+    fd_selector s = selector_new(64);
+    ck_assert_ptr_nonnull(s);
+
+    int client_fds[2];
+    int origin_fds[2];
+    ck_assert_int_eq(socketpair(AF_UNIX, SOCK_STREAM, 0, client_fds), 0);
+    ck_assert_int_eq(socketpair(AF_UNIX, SOCK_STREAM, 0, origin_fds), 0);
+
+    struct socks5_conn *c = new_registered_test_conn(s, client_fds[0]);
+    c->origin_fd = origin_fds[0];
     c->references++;
-    c->resolver_running = true;
-    ck_assert_int_eq(pthread_create(&c->resolver_tid, NULL, resolver_noop, NULL), 0);
+    ck_assert_int_eq(selector_register(s, origin_fds[0], &socks5_handler, OP_NOOP, c),
+                     SELECTOR_SUCCESS);
+    c->stm.current = &socks5_states[REQ_WRITE];
+    c->last_activity = time(NULL) - SOCKS5_INACTIVITY_TIMEOUT - 1;
+
+    reap_last_sweep = 0;
+    socks5_reap_idle(s);
+    ck_assert_uint_eq(0, socks5_active_connections());
+
+    close(client_fds[1]);
+    close(origin_fds[1]);
+    selector_destroy(s);
+    selector_close();
+}
+END_TEST
+
+START_TEST(test_socks5_resolver_pool_rejects_when_capacity_is_exhausted)
+{
+    struct selector_init conf = {
+        .signal         = SIGALRM,
+        .select_timeout = { .tv_sec = 0, .tv_nsec = 50000000 },
+    };
+    ck_assert_int_eq(selector_init(&conf), SELECTOR_SUCCESS);
+    fd_selector s = selector_new(64);
+    ck_assert_ptr_nonnull(s);
+
+    int fds[2];
+    ck_assert_int_eq(socketpair(AF_UNIX, SOCK_STREAM, 0, fds), 0);
+    struct socks5_conn *c = new_registered_test_conn(s, fds[0]);
+
+    ck_assert(socks5_resolver_pool_start());
+    resolver_jobs_in_system = RESOLVER_MAX_JOBS;
+    ck_assert(!resolver_queue_job(c, "localhost", "80"));
+    resolver_jobs_in_system = 0;
+    socks5_resolver_pool_stop(true);
+
+    selector_unregister_fd(s, fds[0]);
+    ck_assert_uint_eq(0, socks5_active_connections());
+    close(fds[1]);
+    selector_destroy(s);
+    selector_close();
+}
+END_TEST
+
+/* If the client fd is closed while a resolver reference is pending, close must
+ * cancel the resolver-owned reference without blocking on DNS. */
+START_TEST(test_socks5_close_cancels_pending_resolver_reference)
+{
+    struct selector_init conf = {
+        .signal         = SIGALRM,
+        .select_timeout = { .tv_sec = 0, .tv_nsec = 50000000 },
+    };
+    ck_assert_int_eq(selector_init(&conf), SELECTOR_SUCCESS);
+    fd_selector s = selector_new(64);
+    ck_assert_ptr_nonnull(s);
+
+    int fds[2];
+    ck_assert_int_eq(socketpair(AF_UNIX, SOCK_STREAM, 0, fds), 0);
+
+    struct socks5_conn *c = new_registered_test_conn(s, fds[0]);
+    c->stm.current = &socks5_states[REQ_RESOLVE];
+    ck_assert(resolver_queue_job(c, "localhost", "80"));
 
     ck_assert_uint_eq(1, socks5_active_connections());
     ck_assert_int_eq(selector_unregister_fd(s, fds[0]), SELECTOR_SUCCESS);
     ck_assert_uint_eq(0, socks5_active_connections());
 
+    socks5_resolver_pool_stop(true);
     close(fds[1]);
     selector_destroy(s);
     selector_close();
@@ -1147,10 +1282,14 @@ static Suite *socks5_suite(void)
     tcase_add_test(tc, test_socks5_fqdn_resolution_failure_is_general_failure);
     tcase_add_test(tc, test_socks5_fqdn_connect_and_relay);
     tcase_add_test(tc, test_socks5_reap_idle_connection);
-    tcase_add_test(tc, test_socks5_reap_does_not_close_idle_relay);
+    tcase_add_test(tc, test_socks5_reap_keeps_relay_before_relay_timeout);
+    tcase_add_test(tc, test_socks5_reap_closes_idle_relay_after_relay_timeout);
     tcase_add_test(tc, test_socks5_reap_req_connecting_sends_failure_reply);
-    tcase_add_test(tc, test_socks5_reap_skips_req_resolve);
-    tcase_add_test(tc, test_socks5_close_joins_pending_resolver_reference);
+    tcase_add_test(tc, test_socks5_reap_req_resolve_timeout_sends_failure_reply);
+    tcase_add_test(tc, test_socks5_reap_completed_resolve_without_notification);
+    tcase_add_test(tc, test_socks5_reap_req_write_with_origin_fd);
+    tcase_add_test(tc, test_socks5_resolver_pool_rejects_when_capacity_is_exhausted);
+    tcase_add_test(tc, test_socks5_close_cancels_pending_resolver_reference);
     suite_add_tcase(s, tc);
     return s;
 }

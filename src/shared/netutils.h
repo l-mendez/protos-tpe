@@ -1,6 +1,9 @@
 #ifndef NETUTILS_H_CTCyWGhkVt1pazNytqIRptmAi5U
 #define NETUTILS_H_CTCyWGhkVt1pazNytqIRptmAi5U
 
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
 #include <netinet/in.h>
 
 #include "buffer.h"
@@ -20,6 +23,14 @@
 const char *
 sockaddr_to_human(char *buff, const size_t buffsize,
                   const struct sockaddr *addr);
+
+/**
+ * Extrae la dirección cruda, su longitud y el puerto host-order de un sockaddr
+ * IPv4/IPv6. Retorna false para familias no soportadas.
+ */
+bool
+sockaddr_get_addr_port(const struct sockaddr *sa, const uint8_t **addr,
+                       size_t *addr_len, uint16_t *port);
 
 
 

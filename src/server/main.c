@@ -73,6 +73,10 @@ main(const int argc, char **argv)
         err = "no se pudo crear el selector";
         goto finally;
     }
+    if (!socks5_resolver_pool_start()) {
+        err = "no se pudo iniciar el pool de resolución DNS";
+        goto finally;
+    }
 
     const fd_handler passive_handler = { .handle_read = socks5_passive_accept };
     if (selector_register(selector, passive, &passive_handler, OP_READ, NULL) != SELECTOR_SUCCESS) {
@@ -118,9 +122,8 @@ finally:
     if (err != NULL) {
         fprintf(stderr, "%s\n", err);
     }
-    /* En apagado forzado puede haber resolvers en getaddrinfo() que todavía
-     * notifiquen usando este selector; al salir del proceso el SO libera todo. */
-    if (selector != NULL && !forced_shutdown) {
+    socks5_resolver_pool_stop(forced_shutdown);
+    if (selector != NULL) {
         selector_destroy(selector);
     }
     selector_close();

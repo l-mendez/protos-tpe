@@ -1,6 +1,7 @@
 #ifndef SOCKS5_H_socks5_connection_handler
 #define SOCKS5_H_socks5_connection_handler
 
+#include <stdbool.h>
 #include <stddef.h>
 
 #include "args.h"
@@ -30,6 +31,14 @@ socks5_passive_accept(struct selector_key *key);
  */
 void
 socks5_set_users(const struct socks5args *args);
+
+/** Inicializa el pool acotado de resolución DNS. Es idempotente. */
+bool
+socks5_resolver_pool_start(void);
+
+/** Detiene el pool de resolución DNS y cancela trabajos pendientes. */
+void
+socks5_resolver_pool_stop(bool force);
 
 /** Cantidad de conexiones SOCKS5 actualmente registradas (para drenar al apagar). */
 size_t

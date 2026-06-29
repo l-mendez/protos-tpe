@@ -19,7 +19,9 @@
 #include "socks5.h"
 #include "stm.h"
 
-#define SOCKS5_BUFFER_SIZE 8192
+#define SOCKS5_BUFFER_SIZE 4096
+#define RESOLVER_WORKERS 4
+#define RESOLVER_MAX_JOBS 64
 
 /* Linux evita el SIGPIPE en send() con esta flag; macOS no la define y lo
  * resuelve ignorando SIGPIPE en el arranque, así que aquí degrada a 0. */
@@ -33,6 +35,8 @@ static inline int would_block(int err)
 {
     return err == EAGAIN || err == EWOULDBLOCK || err == EINTR;
 }
+
+struct resolver_job;
 
 /* Estados de la conexión SOCKS5. */
 enum socks5_state {
@@ -78,9 +82,9 @@ struct socks5_conn {
     struct sockaddr_storage literal_sa; /* storage para la dirección literal */
     int                     last_errno; /* errno del último connect fallido */
     int                     resolver_error; /* getaddrinfo() rc, si falló */
+    struct resolver_job    *resolver_job;
+    bool                    resolver_done;
     bool                    connected;  /* true si el connect tuvo éxito */
-    pthread_t               resolver_tid;
-    bool                    resolver_running;
 
     /* Relay ----------------------------------------------------------------- */
     bool client_closed;     /* cliente envió EOF */
@@ -89,6 +93,7 @@ struct socks5_conn {
     bool origin_wr_shut;    /* ya se hizo shutdown(origin, SHUT_WR) */
     fd_interest client_interest;
     fd_interest origin_interest;
+    bool active_counted;
 
     /* read_buffer: client → origin.  write_buffer: origin → client. */
     struct buffer read_buffer;
@@ -102,9 +107,11 @@ static size_t active_connections = 0;
 /** Lista doblemente enlazada de conexiones activas, para recorrer en el reaper. */
 static struct socks5_conn *conn_list = NULL;
 
-/** Tiempo máximo (en segundos) sin actividad para fases de handshake/connect.
- *  Los túneles RELAY establecidos no se cosechan por inactividad. */
+/** Tiempo máximo (en segundos) sin actividad para fases de handshake/connect. */
 #define SOCKS5_INACTIVITY_TIMEOUT 60
+
+/** Tiempo máximo (en segundos) sin actividad para túneles RELAY establecidos. */
+#define SOCKS5_RELAY_IDLE_TIMEOUT 900
 
 /* Inserta un conn al frente de la lista. */
 static void conn_list_push(struct socks5_conn *c)
@@ -129,6 +136,316 @@ static void conn_list_remove(struct socks5_conn *c)
         c->next->prev = c->prev;
     }
     c->prev = c->next = NULL;
+}
+
+static void conn_mark_inactive(struct socks5_conn *c)
+{
+    if (c->active_counted) {
+        c->active_counted = false;
+        active_connections--;
+    }
+}
+
+static void conn_free_if_unreferenced(struct socks5_conn *c)
+{
+    if (c->references > 0) {
+        return;
+    }
+    conn_mark_inactive(c);
+    conn_list_remove(c);
+    if (c->resolution != NULL) {
+        freeaddrinfo(c->resolution);
+    }
+    free(c);
+}
+
+struct resolver_job {
+    struct socks5_conn *conn;
+    char                host[256];
+    char                port[6];
+    bool                running;
+    bool                completed;
+    bool                canceled;
+    struct resolver_job *next;
+    struct resolver_job *next_all;
+};
+
+static pthread_mutex_t resolver_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t  resolver_cond  = PTHREAD_COND_INITIALIZER;
+static pthread_t       resolver_threads[RESOLVER_WORKERS];
+static bool            resolver_pool_started  = false;
+static bool            resolver_pool_stopping = false;
+static struct resolver_job *resolver_queue_head = NULL;
+static struct resolver_job *resolver_queue_tail = NULL;
+static struct resolver_job *resolver_all_jobs   = NULL;
+static size_t resolver_jobs_in_system = 0;
+
+static void resolver_all_add_locked(struct resolver_job *job)
+{
+    job->next_all = resolver_all_jobs;
+    resolver_all_jobs = job;
+}
+
+static void resolver_all_remove_locked(struct resolver_job *job)
+{
+    struct resolver_job **p = &resolver_all_jobs;
+    while (*p != NULL) {
+        if (*p == job) {
+            *p = job->next_all;
+            job->next_all = NULL;
+            return;
+        }
+        p = &(*p)->next_all;
+    }
+}
+
+static void resolver_queue_push_locked(struct resolver_job *job)
+{
+    job->next = NULL;
+    if (resolver_queue_tail == NULL) {
+        resolver_queue_head = resolver_queue_tail = job;
+    } else {
+        resolver_queue_tail->next = job;
+        resolver_queue_tail = job;
+    }
+}
+
+static struct resolver_job *resolver_queue_pop_locked(void)
+{
+    struct resolver_job *job = resolver_queue_head;
+    if (job != NULL) {
+        resolver_queue_head = job->next;
+        if (resolver_queue_head == NULL) {
+            resolver_queue_tail = NULL;
+        }
+        job->next = NULL;
+    }
+    return job;
+}
+
+static void *resolver_worker_run(void *unused)
+{
+    (void)unused;
+
+    while (true) {
+        pthread_mutex_lock(&resolver_mutex);
+        while (resolver_queue_head == NULL && !resolver_pool_stopping) {
+            pthread_cond_wait(&resolver_cond, &resolver_mutex);
+        }
+        if (resolver_queue_head == NULL && resolver_pool_stopping) {
+            pthread_mutex_unlock(&resolver_mutex);
+            break;
+        }
+        struct resolver_job *job = resolver_queue_pop_locked();
+        job->running = true;
+        bool canceled = job->canceled || resolver_pool_stopping;
+        pthread_mutex_unlock(&resolver_mutex);
+
+        struct addrinfo *resolution = NULL;
+        int rc = EAI_FAIL;
+        if (!canceled) {
+            struct addrinfo hints = {
+                .ai_family   = AF_UNSPEC,
+                .ai_socktype = SOCK_STREAM,
+                .ai_protocol = IPPROTO_TCP,
+            };
+            rc = getaddrinfo(job->host, job->port, &hints, &resolution);
+            if (rc != 0) {
+                resolution = NULL;
+            }
+        }
+
+        fd_selector notify_selector = NULL;
+        int         notify_fd       = -1;
+        bool        notify          = false;
+
+        pthread_mutex_lock(&resolver_mutex);
+        job->running = false;
+        canceled = job->canceled || resolver_pool_stopping;
+        struct socks5_conn *c = job->conn;
+        if (c != NULL) {
+            if (canceled) {
+                if (resolution != NULL) {
+                    freeaddrinfo(resolution);
+                    resolution = NULL;
+                }
+                c->resolver_error = EAI_FAIL;
+                c->resolver_done  = true;
+            } else {
+                c->resolution     = resolution;
+                c->resolver_error = rc;
+                c->resolver_done  = true;
+                notify_selector   = c->selector;
+                notify_fd         = c->client_fd;
+                notify            = notify_fd >= 0;
+                resolution        = NULL;
+            }
+        } else if (resolution != NULL) {
+            freeaddrinfo(resolution);
+            resolution = NULL;
+        }
+        job->completed = true;
+        pthread_mutex_unlock(&resolver_mutex);
+
+        if (notify &&
+            selector_notify_block(notify_selector, notify_fd) != SELECTOR_SUCCESS) {
+            fprintf(stderr, "socks5: selector_notify_block failed for fd %d\n",
+                    notify_fd);
+        }
+    }
+    return NULL;
+}
+
+bool socks5_resolver_pool_start(void)
+{
+    pthread_mutex_lock(&resolver_mutex);
+    if (resolver_pool_started) {
+        resolver_pool_stopping = false;
+        pthread_mutex_unlock(&resolver_mutex);
+        return true;
+    }
+    resolver_pool_stopping = false;
+    pthread_mutex_unlock(&resolver_mutex);
+
+    size_t created = 0;
+    for (; created < RESOLVER_WORKERS; created++) {
+        if (pthread_create(&resolver_threads[created], NULL,
+                           resolver_worker_run, NULL) != 0) {
+            pthread_mutex_lock(&resolver_mutex);
+            resolver_pool_stopping = true;
+            pthread_cond_broadcast(&resolver_cond);
+            pthread_mutex_unlock(&resolver_mutex);
+            for (size_t i = 0; i < created; i++) {
+                pthread_join(resolver_threads[i], NULL);
+            }
+            return false;
+        }
+    }
+
+    pthread_mutex_lock(&resolver_mutex);
+    resolver_pool_started = true;
+    pthread_mutex_unlock(&resolver_mutex);
+    return true;
+}
+
+static void resolver_release_job_list(struct resolver_job *jobs)
+{
+    while (jobs != NULL) {
+        struct resolver_job *next = jobs->next_all;
+        struct socks5_conn *c = jobs->conn;
+        if (c != NULL && c->resolver_job == jobs) {
+            c->resolver_job = NULL;
+            c->references--;
+            conn_free_if_unreferenced(c);
+        }
+        free(jobs);
+        jobs = next;
+    }
+}
+
+void socks5_resolver_pool_stop(bool force)
+{
+    (void)force;
+
+    pthread_mutex_lock(&resolver_mutex);
+    if (!resolver_pool_started) {
+        pthread_mutex_unlock(&resolver_mutex);
+        return;
+    }
+    resolver_pool_stopping = true;
+    for (struct resolver_job *j = resolver_all_jobs; j != NULL; j = j->next_all) {
+        j->canceled = true;
+    }
+    pthread_cond_broadcast(&resolver_cond);
+    pthread_mutex_unlock(&resolver_mutex);
+
+    for (size_t i = 0; i < RESOLVER_WORKERS; i++) {
+        pthread_join(resolver_threads[i], NULL);
+    }
+
+    pthread_mutex_lock(&resolver_mutex);
+    struct resolver_job *jobs = resolver_all_jobs;
+    resolver_all_jobs = NULL;
+    resolver_queue_head = resolver_queue_tail = NULL;
+    resolver_jobs_in_system = 0;
+    resolver_pool_started = false;
+    resolver_pool_stopping = false;
+    pthread_mutex_unlock(&resolver_mutex);
+
+    resolver_release_job_list(jobs);
+}
+
+static bool resolver_queue_job(struct socks5_conn *c, const char *host,
+                               const char *port)
+{
+    if (!socks5_resolver_pool_start()) {
+        return false;
+    }
+
+    struct resolver_job *job = calloc(1, sizeof(*job));
+    if (job == NULL) {
+        return false;
+    }
+    job->conn = c;
+    snprintf(job->host, sizeof(job->host), "%s", host);
+    snprintf(job->port, sizeof(job->port), "%s", port);
+
+    pthread_mutex_lock(&resolver_mutex);
+    if (resolver_pool_stopping || resolver_jobs_in_system >= RESOLVER_MAX_JOBS ||
+        c->resolver_job != NULL) {
+        pthread_mutex_unlock(&resolver_mutex);
+        free(job);
+        return false;
+    }
+    c->references++;
+    c->resolver_job = job;
+    c->resolver_done = false;
+    c->resolver_error = 0;
+    resolver_jobs_in_system++;
+    resolver_all_add_locked(job);
+    resolver_queue_push_locked(job);
+    pthread_cond_signal(&resolver_cond);
+    pthread_mutex_unlock(&resolver_mutex);
+    return true;
+}
+
+static void resolver_cancel_conn(struct socks5_conn *c)
+{
+    pthread_mutex_lock(&resolver_mutex);
+    if (c->resolver_job != NULL) {
+        c->resolver_job->canceled = true;
+    }
+    pthread_mutex_unlock(&resolver_mutex);
+}
+
+static bool resolver_take_completed(struct socks5_conn *c)
+{
+    bool completed = false;
+
+    pthread_mutex_lock(&resolver_mutex);
+    struct resolver_job *job = c->resolver_job;
+    if (job == NULL) {
+        completed = c->resolver_done;
+    } else if (job->completed) {
+        resolver_all_remove_locked(job);
+        resolver_jobs_in_system--;
+        c->resolver_job = NULL;
+        c->references--;
+        completed = c->resolver_done;
+        free(job);
+    }
+    pthread_mutex_unlock(&resolver_mutex);
+    return completed;
+}
+
+static bool resolver_is_completed(struct socks5_conn *c)
+{
+    bool completed;
+
+    pthread_mutex_lock(&resolver_mutex);
+    completed = c->resolver_done;
+    pthread_mutex_unlock(&resolver_mutex);
+    return completed;
 }
 
 /* Usuarios configurados por línea de comandos (-u user:pass). Apuntan al arreglo
@@ -374,21 +691,14 @@ static unsigned request_fail(struct selector_key *key, uint8_t rep)
     c->connected = false;
     fill_request_reply(&c->write_buffer, rep, SOCKS5_ATYP_IPV4);
     if (c->origin_fd != -1) {
-        selector_set_interest(key->s, c->origin_fd, OP_NOOP);
+        int ofd = c->origin_fd;
+        c->origin_fd = -1;
+        selector_unregister_fd(key->s, ofd);
     }
     if (selector_set_interest(key->s, c->client_fd, OP_WRITE) != SELECTOR_SUCCESS) {
         return ERROR;
     }
     return REQ_WRITE;
-}
-
-static void resolver_join_if_running(struct socks5_conn *c)
-{
-    if (c->resolver_running) {
-        pthread_join(c->resolver_tid, NULL);
-        c->resolver_running = false;
-        c->references--;
-    }
 }
 
 /* Traduce el errno de un connect() fallido al código REP de SOCKS5 (§6). */
@@ -405,15 +715,8 @@ static uint8_t rep_from_errno(int err)
 
 static uint8_t rep_from_gai_error(int err)
 {
-    switch (err) {
-        case EAI_NONAME:
-#if defined(EAI_NODATA) && EAI_NODATA != EAI_NONAME
-        case EAI_NODATA:
-#endif
-            return SOCKS5_REP_HOST_UNREACHABLE;
-        default:
-            return SOCKS5_REP_GENERAL_FAILURE;
-    }
+    (void)err;
+    return SOCKS5_REP_GENERAL_FAILURE;
 }
 
 /* Arma una addrinfo sintética apuntando a literal_sa para destinos IPv4/IPv6
@@ -444,38 +747,6 @@ static void build_literal_addr(struct socks5_conn *c)
     c->literal_ai.ai_addr     = (struct sockaddr *)&c->literal_sa;
     c->literal_ai.ai_next     = NULL;
     c->next_addr = &c->literal_ai;
-}
-
-/* Hilo de resolución DNS: ejecuta getaddrinfo y despierta al selector. */
-static void *resolve_run(void *arg)
-{
-    struct socks5_conn *c = arg;
-    const struct socks5_request *r = &c->request;
-
-    /* NUL-terminamos el dominio para getaddrinfo. */
-    char host[256];
-    memcpy(host, r->dst_addr, r->addr_len);
-    host[r->addr_len] = '\0';
-
-    char port[6];
-    snprintf(port, sizeof(port), "%u", r->dst_port);
-
-    struct addrinfo hints = {
-        .ai_family   = AF_UNSPEC,
-        .ai_socktype = SOCK_STREAM,
-        .ai_protocol = IPPROTO_TCP,
-    };
-    int rc = getaddrinfo(host, port, &hints, &c->resolution);
-    c->resolver_error = rc;
-    if (rc != 0) {
-        c->resolution = NULL;
-    }
-
-    if (selector_notify_block(c->selector, c->client_fd) != SELECTOR_SUCCESS) {
-        fprintf(stderr, "socks5: selector_notify_block failed for fd %d\n",
-                c->client_fd);
-    }
-    return NULL;
 }
 
 static unsigned request_read(struct selector_key *key)
@@ -512,18 +783,20 @@ static unsigned request_read(struct selector_key *key)
         return request_connect(key);
     }
 
-    /* FQDN: resolver en un hilo aparte. Parquear el cliente sin interés hasta que
-     * el hilo complete la resolución y despierte al selector. Se cuenta el hilo
-     * como referencia para evitar un use-after-free si la conexión se cierra
-     * antes de que el hilo termine (e.g. apagado forzado). */
+    /* FQDN: resolver en el pool acotado. Parquear el cliente sin interés hasta
+     * que el worker complete la resolución y despierte al selector. */
     if (selector_set_interest_key(key, OP_NOOP) != SELECTOR_SUCCESS) {
         return ERROR;
     }
-    c->references++;
-    c->resolver_running = true;
-    if (pthread_create(&c->resolver_tid, NULL, resolve_run, c) != 0) {
-        c->resolver_running = false;
-        c->references--;
+
+    char host[256];
+    memcpy(host, r->dst_addr, r->addr_len);
+    host[r->addr_len] = '\0';
+
+    char port[6];
+    snprintf(port, sizeof(port), "%u", r->dst_port);
+
+    if (!resolver_queue_job(c, host, port)) {
         return request_fail(key, SOCKS5_REP_GENERAL_FAILURE);
     }
     return REQ_RESOLVE;
@@ -534,7 +807,9 @@ static unsigned request_read(struct selector_key *key)
 static unsigned request_resolve_done(struct selector_key *key)
 {
     struct socks5_conn *c = key->data;
-    resolver_join_if_running(c);
+    if (!resolver_take_completed(c)) {
+        return REQ_RESOLVE;
+    }
 
     if (c->resolution == NULL) {
         return request_fail(key, rep_from_gai_error(c->resolver_error));
@@ -892,17 +1167,30 @@ void socks5_reap_idle(fd_selector s)
         struct socks5_conn *nxt = c->next; /* capturar: socks5_done libera c */
 
         unsigned st = stm_state(&c->stm);
-        if (st == REQ_RESOLVE || st == RELAY ||
-            now - c->last_activity < SOCKS5_INACTIVITY_TIMEOUT) {
-            c = nxt;
-            continue;
-        }
-
         struct selector_key key = {
             .s    = s,
             .fd   = c->client_fd,
             .data = c,
         };
+
+        if (st == REQ_RESOLVE && resolver_is_completed(c)) {
+            unsigned next = request_resolve_done(&key);
+            if (next == ERROR || next == DONE) {
+                socks5_done(&key);
+            } else {
+                c->stm.current = &socks5_states[next];
+            }
+            c = nxt;
+            continue;
+        }
+
+        const time_t timeout = (st == RELAY) ? SOCKS5_RELAY_IDLE_TIMEOUT
+                                             : SOCKS5_INACTIVITY_TIMEOUT;
+        if (now - c->last_activity < timeout) {
+            c = nxt;
+            continue;
+        }
+
         if (st == REQ_CONNECTING) {
             unsigned next = request_fail(&key, SOCKS5_REP_TTL_EXPIRED);
             if (next == ERROR || next == DONE) {
@@ -910,7 +1198,19 @@ void socks5_reap_idle(fd_selector s)
             } else {
                 c->stm.current = &socks5_states[next];
             }
-        } else if (c->origin_fd == -1) {
+        } else if (st == REQ_RESOLVE) {
+            resolver_cancel_conn(c);
+            if (c->client_fd == -1) {
+                conn_mark_inactive(c);
+            } else {
+                unsigned next = request_fail(&key, SOCKS5_REP_GENERAL_FAILURE);
+                if (next == ERROR || next == DONE) {
+                    socks5_done(&key);
+                } else {
+                    c->stm.current = &socks5_states[next];
+                }
+            }
+        } else {
             socks5_done(&key);
         }
         c = nxt;
@@ -954,6 +1254,9 @@ static void socks5_write(struct selector_key *key)
 static void socks5_block(struct selector_key *key)
 {
     struct socks5_conn *c = key->data;
+    if (stm_state(&c->stm) != REQ_RESOLVE) {
+        return;
+    }
     socks5_advance(key, stm_handler_block(&c->stm, key));
 }
 
@@ -961,16 +1264,21 @@ static void socks5_close(struct selector_key *key)
 {
     struct socks5_conn *c = key->data;
     close(key->fd);
-    c->references--;
-    resolver_join_if_running(c);
-    if (c->references <= 0) {
-        conn_list_remove(c);
-        if (c->resolution != NULL) {
-            freeaddrinfo(c->resolution);
-        }
-        free(c);
-        active_connections--;
+    if (key->fd == c->client_fd) {
+        c->client_fd = -1;
+    } else if (key->fd == c->origin_fd) {
+        c->origin_fd = -1;
     }
+    c->references--;
+
+    if (c->client_fd == -1 && c->origin_fd == -1) {
+        conn_mark_inactive(c);
+        resolver_cancel_conn(c);
+    }
+    if (resolver_is_completed(c)) {
+        resolver_take_completed(c);
+    }
+    conn_free_if_unreferenced(c);
 }
 
 static const fd_handler socks5_handler = {
@@ -1006,6 +1314,7 @@ void socks5_passive_accept(struct selector_key *key)
     conn->client_fd  = client;
     conn->origin_fd  = -1;
     conn->references = 1;
+    conn->active_counted = true;
 
     conn->stm.initial   = NEG_READ;
     conn->stm.states    = socks5_states;

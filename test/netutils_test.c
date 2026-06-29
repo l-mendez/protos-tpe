@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <sys/socket.h>
 #include <check.h>
 
 #include "netutils.h"
@@ -57,6 +58,60 @@ START_TEST (test_sockaddr_to_human_ipv6) {
 }
 END_TEST
 
+START_TEST(test_sockaddr_get_addr_port_ipv4)
+{
+    struct sockaddr_in addr = {
+        .sin_family = AF_INET,
+        .sin_port   = htons(1080),
+    };
+    addr.sin_addr.s_addr = htonl(0x7F000001);
+
+    const uint8_t *addr_bytes = NULL;
+    size_t         addr_len   = 0;
+    uint16_t       port       = 0;
+    ck_assert(sockaddr_get_addr_port((const struct sockaddr *)&addr,
+                                     &addr_bytes, &addr_len, &port));
+    ck_assert_uint_eq(4, addr_len);
+    ck_assert_uint_eq(1080, port);
+    ck_assert_uint_eq(127, addr_bytes[0]);
+    ck_assert_uint_eq(1, addr_bytes[3]);
+}
+END_TEST
+
+START_TEST(test_sockaddr_get_addr_port_ipv6)
+{
+    struct sockaddr_in6 addr = {
+        .sin6_family = AF_INET6,
+        .sin6_port   = htons(9090),
+    };
+    uint8_t *raw = (uint8_t *)&addr.sin6_addr;
+    for (int i = 0; i < 16; i++) {
+        raw[i] = (uint8_t)i;
+    }
+
+    const uint8_t *addr_bytes = NULL;
+    size_t         addr_len   = 0;
+    uint16_t       port       = 0;
+    ck_assert(sockaddr_get_addr_port((const struct sockaddr *)&addr,
+                                     &addr_bytes, &addr_len, &port));
+    ck_assert_uint_eq(16, addr_len);
+    ck_assert_uint_eq(9090, port);
+    ck_assert_uint_eq(0, addr_bytes[0]);
+    ck_assert_uint_eq(15, addr_bytes[15]);
+}
+END_TEST
+
+START_TEST(test_sockaddr_get_addr_port_rejects_unknown_family)
+{
+    struct sockaddr addr = { .sa_family = AF_UNIX };
+    const uint8_t *addr_bytes = NULL;
+    size_t         addr_len   = 0;
+    uint16_t       port       = 0;
+
+    ck_assert(!sockaddr_get_addr_port(&addr, &addr_bytes, &addr_len, &port));
+}
+END_TEST
+
 Suite * 
 hello_suite(void) {
     Suite *s;
@@ -69,6 +124,9 @@ hello_suite(void) {
 
     tcase_add_test(tc, test_sockaddr_to_human_ipv4);
     tcase_add_test(tc, test_sockaddr_to_human_ipv6);
+    tcase_add_test(tc, test_sockaddr_get_addr_port_ipv4);
+    tcase_add_test(tc, test_sockaddr_get_addr_port_ipv6);
+    tcase_add_test(tc, test_sockaddr_get_addr_port_rejects_unknown_family);
     suite_add_tcase(s, tc);
 
     return s;
@@ -88,4 +146,3 @@ main(void) {
     srunner_free(sr);
     return (number_failed == 0) ? EXIT_SUCCESS : EXIT_FAILURE;
 }
-
