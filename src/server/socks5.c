@@ -94,6 +94,7 @@ struct socks5_conn {
     fd_interest client_interest;
     fd_interest origin_interest;
     bool active_counted;
+    bool arrival_error;     /* un on_arrival falló al armar intereses: hay que cerrar */
 
     /* read_buffer: client → origin.  write_buffer: origin → client. */
     struct buffer read_buffer;
@@ -161,6 +162,11 @@ static void conn_free_if_unreferenced(struct socks5_conn *c)
 
 struct resolver_job {
     struct socks5_conn *conn;
+    /* Destino del despertar, capturado por el hilo principal al encolar el job y
+     * sólo leído por el worker. Evita que el worker lea c->client_fd, que el hilo
+     * principal escribe sin el resolver_mutex (sería un data race). */
+    fd_selector         notify_selector;
+    int                 notify_fd;
     char                host[256];
     char                port[6];
     bool                running;
@@ -295,8 +301,8 @@ static void *resolver_worker_run(void *unused)
                 c->resolution     = resolution;
                 c->resolver_error = rc;
                 c->resolver_done  = true;
-                notify_selector   = c->selector;
-                notify_fd         = c->client_fd;
+                notify_selector   = job->notify_selector;
+                notify_fd         = job->notify_fd;
                 notify            = notify_fd >= 0;
                 resolution        = NULL;
             }
@@ -417,6 +423,8 @@ static bool resolver_queue_job(struct socks5_conn *c, const char *host,
         return false;
     }
     job->conn = c;
+    job->notify_selector = c->selector;
+    job->notify_fd       = c->client_fd;
     snprintf(job->host, sizeof(job->host), "%s", host);
     snprintf(job->port, sizeof(job->port), "%s", port);
 
@@ -1052,7 +1060,12 @@ static void relay_init(const unsigned state, struct selector_key *key)
     c->origin_closed  = false;
     c->client_wr_shut = false;
     c->origin_wr_shut = false;
-    relay_update(c);
+    /* on_arrival es void y no puede devolver un estado: si armar los intereses de
+     * los dos fds falla, se marca el conn para que socks5_advance lo cierre en
+     * vez de dejarlo colgado en RELAY hasta que lo coseche el reaper. */
+    if (relay_update(c) == ERROR) {
+        c->arrival_error = true;
+    }
 }
 
 static unsigned relay_read(struct selector_key *key)
@@ -1291,7 +1304,7 @@ static void socks5_advance(struct selector_key *key, unsigned st)
     while (is_read_state(st) && buffer_can_read(&c->read_buffer)) {
         st = stm_handler_read(&c->stm, key);
     }
-    if (st == ERROR || st == DONE) {
+    if (st == ERROR || st == DONE || c->arrival_error) {
         socks5_done(key);
     }
 }
