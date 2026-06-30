@@ -1,4 +1,6 @@
+#include <fcntl.h>
 #include <stdlib.h>
+#include <unistd.h>
 #include <check.h>
 
 #define INITIAL_SIZE ((size_t) 1024)
@@ -152,7 +154,7 @@ START_TEST (test_selector_register_unregister_register) {
 }
 END_TEST
 
-Suite * 
+Suite *
 suite(void) {
     Suite *s  = suite_create("nio");
     TCase *tc = tcase_create("nio");
@@ -177,4 +179,3 @@ main(void) {
     srunner_free(sr);
     return (number_failed == 0) ? EXIT_SUCCESS : EXIT_FAILURE;
 }
-

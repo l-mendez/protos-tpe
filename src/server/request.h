@@ -3,6 +3,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <sys/socket.h>
 
 #include "buffer.h"
 
@@ -46,8 +47,12 @@ typedef enum {
 /* REP: códigos de respuesta del request (RFC 1928 §6). */
 #define SOCKS5_REP_SUCCESS           0x00
 #define SOCKS5_REP_GENERAL_FAILURE   0x01
-#define SOCKS5_REP_CMD_NOT_SUPPORTED 0x07
-#define SOCKS5_REP_ATYP_NOT_SUPPORTED 0x08
+#define SOCKS5_REP_NETWORK_UNREACHABLE 0x03
+#define SOCKS5_REP_HOST_UNREACHABLE    0x04
+#define SOCKS5_REP_CONNECTION_REFUSED  0x05
+#define SOCKS5_REP_TTL_EXPIRED         0x06
+#define SOCKS5_REP_CMD_NOT_SUPPORTED   0x07
+#define SOCKS5_REP_ATYP_NOT_SUPPORTED  0x08
 
 struct socks5_request {
     req_state state; /* el progreso vive acá, explícito */
@@ -74,11 +79,18 @@ bool
 request_done(const struct socks5_request *p);
 
 /**
- * Escribe una respuesta de request (RFC 1928 §6) en `b` con el código `rep` y un
- * BND.ADDR/PORT nulo (0.0.0.0:0, ATYP IPv4). Pensado para las respuestas de
- * error: 10 bytes VER REP RSV ATYP BND.ADDR BND.PORT.
+ * Escribe una respuesta de request (RFC 1928 §6) en `b` con el código `rep`, el
+ * ATYP indicado y un BND.ADDR/PORT nulo. Para IPv4 genera 10 bytes; para IPv6,
+ * 22 bytes. Las respuestas de error usan ATYP IPv4.
  */
 void
-fill_request_reply(buffer *b, uint8_t rep);
+fill_request_reply(buffer *b, uint8_t rep, uint8_t atyp);
+
+/**
+ * Escribe una respuesta de request (RFC 1928 §6) usando el BND.ADDR/PORT real
+ * indicado por `addr`. Retorna false si la familia no es IPv4/IPv6.
+ */
+bool
+fill_request_reply_addr(buffer *b, uint8_t rep, const struct sockaddr *addr);
 
 #endif
