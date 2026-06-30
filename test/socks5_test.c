@@ -925,6 +925,9 @@ START_TEST(test_socks5_fqdn_connect_and_relay)
     ck_assert_int_eq(memcmp(msg, echoed, msg_len), 0);
 
     close(client);
+    /* Join the resolver workers before stopping the select loop so a late wakeup
+     * cannot target an already-destroyed selector. */
+    socks5_resolver_pool_stop();
     test_stop = 1;
     pthread_join(loop, NULL);
     pthread_join(origin_tid, NULL);
@@ -1433,13 +1436,26 @@ START_TEST(test_socks5_close_cancels_pending_resolver_reference)
 
     struct socks5_conn *c = new_registered_test_conn(s, fds[0]);
     c->stm.current = &socks5_states[REQ_RESOLVE];
-    ck_assert(resolver_queue_job(c, "localhost", "80"));
+
+    /* Inject a pending resolver job by hand (no live worker pool) so the cancel
+     * path is exercised deterministically, without a worker racing to wake a
+     * selector that this test never runs. */
+    struct resolver_job *job = calloc(1, sizeof(*job));
+    ck_assert_ptr_nonnull(job);
+    job->conn = c;
+    pthread_mutex_lock(&resolver_mutex);
+    c->resolver_job = job;
+    c->references++;
+    resolver_jobs_in_system = 1;
+    resolver_all_add_locked(job);
+    resolver_queue_push_locked(job);
+    pthread_mutex_unlock(&resolver_mutex);
 
     ck_assert_uint_eq(1, socks5_active_connections());
     ck_assert_int_eq(selector_unregister_fd(s, fds[0]), SELECTOR_SUCCESS);
     ck_assert_uint_eq(0, socks5_active_connections());
+    ck_assert_uint_eq(0, resolver_jobs_in_system); /* close cancelled and freed it */
 
-    socks5_resolver_pool_stop();
     close(fds[1]);
     selector_destroy(s);
     selector_close();
@@ -1448,7 +1464,12 @@ END_TEST
 
 /* The resolver wakeup target must be captured into the job at enqueue time so
  * the worker thread never reads c->client_fd (which the main thread rewrites
- * without the resolver lock). */
+ * without the resolver lock).
+ *
+ * The pool is flagged as started so resolver_queue_job enqueues the job without
+ * spawning real workers: it sits unprocessed, letting us inspect the wakeup
+ * target it captured without a worker racing to wake a selector this test never
+ * runs. close() then cancels and frees the still-queued job. */
 START_TEST(test_socks5_resolver_job_captures_notify_target)
 {
     struct selector_init conf = {
@@ -1464,10 +1485,13 @@ START_TEST(test_socks5_resolver_job_captures_notify_target)
 
     struct socks5_conn *c = new_registered_test_conn(s, fds[0]);
     c->stm.current = &socks5_states[REQ_RESOLVE];
-    ck_assert(resolver_queue_job(c, "localhost", "80"));
 
-    /* notify_fd/notify_selector are write-once at enqueue; read under the lock
-     * because the worker may already be mutating other job fields. */
+    pthread_mutex_lock(&resolver_mutex);
+    resolver_pool_started = true;
+    pthread_mutex_unlock(&resolver_mutex);
+
+    ck_assert(resolver_queue_job(c, "host.example", "443"));
+
     pthread_mutex_lock(&resolver_mutex);
     struct resolver_job *job = c->resolver_job;
     ck_assert_ptr_nonnull(job);
@@ -1477,8 +1501,12 @@ START_TEST(test_socks5_resolver_job_captures_notify_target)
 
     ck_assert_int_eq(selector_unregister_fd(s, fds[0]), SELECTOR_SUCCESS);
     ck_assert_uint_eq(0, socks5_active_connections());
+    ck_assert_uint_eq(0, resolver_jobs_in_system); /* close cancelled and freed it */
 
-    socks5_resolver_pool_stop();
+    pthread_mutex_lock(&resolver_mutex);
+    resolver_pool_started = false;
+    pthread_mutex_unlock(&resolver_mutex);
+
     close(fds[1]);
     selector_destroy(s);
     selector_close();
