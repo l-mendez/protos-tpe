@@ -1446,6 +1446,90 @@ START_TEST(test_socks5_close_cancels_pending_resolver_reference)
 }
 END_TEST
 
+/* The resolver wakeup target must be captured into the job at enqueue time so
+ * the worker thread never reads c->client_fd (which the main thread rewrites
+ * without the resolver lock). */
+START_TEST(test_socks5_resolver_job_captures_notify_target)
+{
+    struct selector_init conf = {
+        .signal         = SIGALRM,
+        .select_timeout = { .tv_sec = 0, .tv_nsec = 50000000 },
+    };
+    ck_assert_int_eq(selector_init(&conf), SELECTOR_SUCCESS);
+    fd_selector s = selector_new(64);
+    ck_assert_ptr_nonnull(s);
+
+    int fds[2];
+    ck_assert_int_eq(socketpair(AF_UNIX, SOCK_STREAM, 0, fds), 0);
+
+    struct socks5_conn *c = new_registered_test_conn(s, fds[0]);
+    c->stm.current = &socks5_states[REQ_RESOLVE];
+    ck_assert(resolver_queue_job(c, "localhost", "80"));
+
+    /* notify_fd/notify_selector are write-once at enqueue; read under the lock
+     * because the worker may already be mutating other job fields. */
+    pthread_mutex_lock(&resolver_mutex);
+    struct resolver_job *job = c->resolver_job;
+    ck_assert_ptr_nonnull(job);
+    ck_assert_int_eq(fds[0], job->notify_fd);
+    ck_assert_ptr_eq(s, job->notify_selector);
+    pthread_mutex_unlock(&resolver_mutex);
+
+    ck_assert_int_eq(selector_unregister_fd(s, fds[0]), SELECTOR_SUCCESS);
+    ck_assert_uint_eq(0, socks5_active_connections());
+
+    socks5_resolver_pool_stop();
+    close(fds[1]);
+    selector_destroy(s);
+    selector_close();
+}
+END_TEST
+
+/* If arming the two relay fds fails on RELAY entry, relay_init must flag the
+ * connection so it is torn down immediately rather than stranded in RELAY with
+ * stale interests until the idle reaper collects it. The origin fd is left
+ * unregistered so relay_update's interest update on it fails. */
+START_TEST(test_socks5_relay_init_arming_failure_tears_down)
+{
+    struct selector_init conf = {
+        .signal         = SIGALRM,
+        .select_timeout = { .tv_sec = 0, .tv_nsec = 50000000 },
+    };
+    ck_assert_int_eq(selector_init(&conf), SELECTOR_SUCCESS);
+    fd_selector s = selector_new(64);
+    ck_assert_ptr_nonnull(s);
+
+    int client_fds[2];
+    int origin_fds[2];
+    ck_assert_int_eq(socketpair(AF_UNIX, SOCK_STREAM, 0, client_fds), 0);
+    ck_assert_int_eq(socketpair(AF_UNIX, SOCK_STREAM, 0, origin_fds), 0);
+
+    struct socks5_conn *c = new_registered_test_conn(s, client_fds[0]);
+    c->origin_fd = origin_fds[0]; /* valid fd, deliberately NOT registered */
+    c->connected = true;
+    fill_request_reply(&c->write_buffer, SOCKS5_REP_SUCCESS, SOCKS5_ATYP_IPV4);
+    c->stm.current = &socks5_states[REQ_WRITE];
+
+    struct selector_key key = {
+        .s    = s,
+        .fd   = c->client_fd,
+        .data = c,
+    };
+    socks5_write(&key); /* drains the reply, enters RELAY, arming fails */
+
+    uint8_t reply[10];
+    read_exactly(client_fds[1], reply, sizeof(reply));
+    ck_assert_uint_eq(SOCKS5_REP_SUCCESS, reply[1]);
+    ck_assert_uint_eq(0, socks5_active_connections());
+
+    close(client_fds[1]);
+    close(origin_fds[0]);
+    close(origin_fds[1]);
+    selector_destroy(s);
+    selector_close();
+}
+END_TEST
+
 /* ======================================================== suite ========= */
 
 static Suite *socks5_suite(void)
@@ -1481,6 +1565,8 @@ static Suite *socks5_suite(void)
     tcase_add_test(tc, test_socks5_resolver_pool_rejects_when_capacity_is_exhausted);
     tcase_add_test(tc, test_socks5_rejects_domain_with_embedded_nul);
     tcase_add_test(tc, test_socks5_close_cancels_pending_resolver_reference);
+    tcase_add_test(tc, test_socks5_resolver_job_captures_notify_target);
+    tcase_add_test(tc, test_socks5_relay_init_arming_failure_tears_down);
     suite_add_tcase(s, tc);
     return s;
 }
