@@ -952,7 +952,7 @@ START_TEST(test_socks5_reap_idle_connection)
     ck_assert_int_eq(socketpair(AF_UNIX, SOCK_STREAM, 0, fds), 0);
 
     struct socks5_conn *c = new_registered_test_conn(s, fds[0]);
-    c->last_activity = time(NULL) - SOCKS5_INACTIVITY_TIMEOUT - 1;
+    c->last_activity = monotonic_now() - SOCKS5_INACTIVITY_TIMEOUT - 1;
 
     reap_last_sweep = 0; /* reset throttle para que el barrido corra */
     socks5_reap_idle(s);
@@ -989,7 +989,7 @@ START_TEST(test_socks5_reap_keeps_relay_before_relay_timeout)
     ck_assert_int_eq(selector_register(s, origin_fds[0], &socks5_handler, OP_NOOP, c),
                      SELECTOR_SUCCESS);
     c->stm.current = &socks5_states[RELAY];
-    c->last_activity = time(NULL) - SOCKS5_INACTIVITY_TIMEOUT - 1;
+    c->last_activity = monotonic_now() - SOCKS5_INACTIVITY_TIMEOUT - 1;
 
     reap_last_sweep = 0;
     socks5_reap_idle(s);
@@ -1029,7 +1029,7 @@ START_TEST(test_socks5_reap_closes_idle_relay_after_relay_timeout)
     ck_assert_int_eq(selector_register(s, origin_fds[0], &socks5_handler, OP_NOOP, c),
                      SELECTOR_SUCCESS);
     c->stm.current = &socks5_states[RELAY];
-    c->last_activity = time(NULL) - SOCKS5_RELAY_IDLE_TIMEOUT - 1;
+    c->last_activity = monotonic_now() - SOCKS5_RELAY_IDLE_TIMEOUT - 1;
 
     reap_last_sweep = 0;
     socks5_reap_idle(s);
@@ -1059,7 +1059,7 @@ START_TEST(test_socks5_reap_req_connecting_sends_failure_reply)
 
     struct socks5_conn *c = new_registered_test_conn(s, fds[0]);
     c->stm.current = &socks5_states[REQ_CONNECTING];
-    c->last_activity = time(NULL) - SOCKS5_INACTIVITY_TIMEOUT - 1;
+    c->last_activity = monotonic_now() - SOCKS5_INACTIVITY_TIMEOUT - 1;
 
     reap_last_sweep = 0;
     socks5_reap_idle(s);
@@ -1100,7 +1100,7 @@ START_TEST(test_socks5_reap_req_resolve_timeout_sends_failure_reply)
     struct socks5_conn *c = new_registered_test_conn(s, fds[0]);
 
     c->stm.current = &socks5_states[REQ_RESOLVE];
-    c->last_activity = time(NULL) - SOCKS5_INACTIVITY_TIMEOUT - 100;
+    c->last_activity = monotonic_now() - SOCKS5_INACTIVITY_TIMEOUT - 100;
 
     reap_last_sweep = 0;
     socks5_reap_idle(s);
@@ -1154,7 +1154,7 @@ START_TEST(test_socks5_reap_req_resolve_timeout_releases_pending_job)
     pthread_mutex_unlock(&resolver_mutex);
 
     c->stm.current = &socks5_states[REQ_RESOLVE];
-    c->last_activity = time(NULL) - SOCKS5_INACTIVITY_TIMEOUT - 1;
+    c->last_activity = monotonic_now() - SOCKS5_INACTIVITY_TIMEOUT - 1;
 
     reap_last_sweep = 0;
     socks5_reap_idle(s);
@@ -1198,7 +1198,7 @@ START_TEST(test_socks5_reap_completed_resolve_without_notification)
     c->stm.current = &socks5_states[REQ_RESOLVE];
     c->resolver_done = true;
     c->resolver_error = EAI_NONAME;
-    c->last_activity = time(NULL);
+    c->last_activity = monotonic_now();
 
     reap_last_sweep = 0;
     socks5_reap_idle(s);
@@ -1241,7 +1241,7 @@ START_TEST(test_socks5_reap_completed_resolve_refreshes_activity)
     c->resolver_done = true;
     c->resolver_error = EAI_NONAME;
 
-    const time_t before = time(NULL);
+    const time_t before = monotonic_now();
     c->last_activity = before - SOCKS5_INACTIVITY_TIMEOUT - 100;
 
     reap_last_sweep = 0;
@@ -1288,7 +1288,7 @@ START_TEST(test_socks5_reap_req_write_with_origin_fd)
     ck_assert_int_eq(selector_register(s, origin_fds[0], &socks5_handler, OP_NOOP, c),
                      SELECTOR_SUCCESS);
     c->stm.current = &socks5_states[REQ_WRITE];
-    c->last_activity = time(NULL) - SOCKS5_INACTIVITY_TIMEOUT - 1;
+    c->last_activity = monotonic_now() - SOCKS5_INACTIVITY_TIMEOUT - 1;
 
     reap_last_sweep = 0;
     socks5_reap_idle(s);
