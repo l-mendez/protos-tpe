@@ -497,7 +497,7 @@ handle_block_notifications(fd_selector s) {
     while (j != NULL) {
 
         struct item* item = s->fds + j->fd;
-        if (ITEM_USED(item)) {
+        if (ITEM_USED(item) && item->handler->handle_block != NULL) {
             key.fd = item->fd;
             key.data = item->data;
             item->handler->handle_block(&key);

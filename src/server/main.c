@@ -47,7 +47,6 @@ main(const int argc, char **argv)
     int          ret      = 1;
     const char  *err      = NULL;
     fd_selector  selector = NULL;
-    bool         forced_shutdown = false;
 
     int passive = server_setup_passive(args.socks_addr, args.socks_port);
     if (passive < 0) {
@@ -108,7 +107,6 @@ main(const int argc, char **argv)
             }
             /* Salir cuando no quedan conexiones, o si llega una segunda señal. */
             if (terminate > 1) {
-                forced_shutdown = true;
                 break;
             }
             if (socks5_active_connections() == 0) {
@@ -122,7 +120,7 @@ finally:
     if (err != NULL) {
         fprintf(stderr, "%s\n", err);
     }
-    socks5_resolver_pool_stop(forced_shutdown);
+    socks5_resolver_pool_stop();
     if (selector != NULL) {
         selector_destroy(selector);
     }

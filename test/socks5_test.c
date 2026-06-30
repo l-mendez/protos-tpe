@@ -1127,7 +1127,7 @@ END_TEST
 
 START_TEST(test_socks5_reap_req_resolve_timeout_releases_pending_job)
 {
-    socks5_resolver_pool_stop(true);
+    socks5_resolver_pool_stop();
 
     struct selector_init conf = {
         .signal         = SIGALRM,
@@ -1365,7 +1365,7 @@ START_TEST(test_socks5_resolver_pool_rejects_when_capacity_is_exhausted)
     resolver_jobs_in_system = RESOLVER_MAX_JOBS;
     ck_assert(!resolver_queue_job(c, "localhost", "80"));
     resolver_jobs_in_system = 0;
-    socks5_resolver_pool_stop(true);
+    socks5_resolver_pool_stop();
 
     selector_unregister_fd(s, fds[0]);
     ck_assert_uint_eq(0, socks5_active_connections());
@@ -1439,7 +1439,7 @@ START_TEST(test_socks5_close_cancels_pending_resolver_reference)
     ck_assert_int_eq(selector_unregister_fd(s, fds[0]), SELECTOR_SUCCESS);
     ck_assert_uint_eq(0, socks5_active_connections());
 
-    socks5_resolver_pool_stop(true);
+    socks5_resolver_pool_stop();
     close(fds[1]);
     selector_destroy(s);
     selector_close();

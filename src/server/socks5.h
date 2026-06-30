@@ -38,7 +38,7 @@ socks5_resolver_pool_start(void);
 
 /** Detiene el pool de resolución DNS y cancela trabajos pendientes. */
 void
-socks5_resolver_pool_stop(bool force);
+socks5_resolver_pool_stop(void);
 
 /** Cantidad de conexiones SOCKS5 actualmente registradas (para drenar al apagar). */
 size_t

@@ -375,10 +375,8 @@ static void resolver_release_job_list(struct resolver_job *jobs)
     }
 }
 
-void socks5_resolver_pool_stop(bool force)
+void socks5_resolver_pool_stop(void)
 {
-    (void)force;
-
     pthread_mutex_lock(&resolver_mutex);
     if (!resolver_pool_started) {
         pthread_mutex_unlock(&resolver_mutex);
@@ -759,12 +757,6 @@ static uint8_t rep_from_errno(int err)
     }
 }
 
-static uint8_t rep_from_gai_error(int err)
-{
-    (void)err;
-    return SOCKS5_REP_GENERAL_FAILURE;
-}
-
 /* Arma una addrinfo sintética apuntando a literal_sa para destinos IPv4/IPv6
  * (sin necesidad de getaddrinfo). */
 static void build_literal_addr(struct socks5_conn *c)
@@ -858,7 +850,8 @@ static unsigned request_resolve_done(struct selector_key *key)
     }
 
     if (c->resolution == NULL) {
-        return request_fail(key, rep_from_gai_error(c->resolver_error));
+        /* getaddrinfo no distingue causas que mapeen limpio a un REP de §6. */
+        return request_fail(key, SOCKS5_REP_GENERAL_FAILURE);
     }
     c->next_addr = c->resolution;
     return request_connect(key);
@@ -1327,7 +1320,8 @@ static void socks5_close(struct selector_key *key)
     if (c->client_fd == -1 && c->origin_fd == -1) {
         conn_mark_inactive(c);
         resolver_cancel_conn(c);
-    } else if (resolver_is_completed(c)) {
+    } else {
+        /* No-op si el job sigue en vuelo o ya no existe; reclama si completó. */
         resolver_take_completed(c);
     }
     conn_free_if_unreferenced(c);
