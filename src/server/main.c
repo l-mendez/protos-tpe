@@ -72,6 +72,10 @@ main(const int argc, char **argv)
         err = "no se pudo crear el selector";
         goto finally;
     }
+    if (!socks5_resolver_pool_start()) {
+        err = "no se pudo iniciar el pool de resolución DNS";
+        goto finally;
+    }
 
     const fd_handler passive_handler = { .handle_read = socks5_passive_accept };
     if (selector_register(selector, passive, &passive_handler, OP_READ, NULL) != SELECTOR_SUCCESS) {
@@ -88,6 +92,8 @@ main(const int argc, char **argv)
             goto finally;
         }
 
+        socks5_reap_idle(selector);
+
         if (terminate) {
             if (accepting) {
                 /* Apagado ordenado: dejar de aceptar nuevas conexiones y
@@ -100,7 +106,10 @@ main(const int argc, char **argv)
                        socks5_active_connections());
             }
             /* Salir cuando no quedan conexiones, o si llega una segunda señal. */
-            if (socks5_active_connections() == 0 || terminate > 1) {
+            if (terminate > 1) {
+                break;
+            }
+            if (socks5_active_connections() == 0) {
                 break;
             }
         }
@@ -111,6 +120,7 @@ finally:
     if (err != NULL) {
         fprintf(stderr, "%s\n", err);
     }
+    socks5_resolver_pool_stop();
     if (selector != NULL) {
         selector_destroy(selector);
     }

@@ -17,22 +17,12 @@ sockaddr_to_human(char *buff, const size_t buffsize,
         strncpy(buff, "null", buffsize);
         return buff;
     }
-    in_port_t port;
-    void *p = 0x00;
-    bool handled = false;
+    const uint8_t *p = 0x00;
+    size_t addr_len = 0;
+    uint16_t port = 0;
+    bool handled = sockaddr_get_addr_port(addr, &p, &addr_len, &port);
+    (void)addr_len;
 
-    switch(addr->sa_family) {
-        case AF_INET:
-            p    = &((struct sockaddr_in *) addr)->sin_addr;
-            port =  ((struct sockaddr_in *) addr)->sin_port;
-            handled = true;
-            break;
-        case AF_INET6:
-            p    = &((struct sockaddr_in6 *) addr)->sin6_addr;
-            port =  ((struct sockaddr_in6 *) addr)->sin6_port;
-            handled = true;
-            break;
-    }
     if(handled) {
         if (inet_ntop(addr->sa_family, p,  buff, buffsize) == 0) {
             strncpy(buff, "unknown ip", buffsize);
@@ -47,11 +37,38 @@ sockaddr_to_human(char *buff, const size_t buffsize,
     const size_t len = strlen(buff);
 
     if(handled) {
-        snprintf(buff + len, buffsize - len, "%d", ntohs(port));
+        snprintf(buff + len, buffsize - len, "%u", port);
     }
     buff[buffsize - 1] = 0;
 
     return buff;
+}
+
+bool
+sockaddr_get_addr_port(const struct sockaddr *sa, const uint8_t **addr,
+                       size_t *addr_len, uint16_t *port) {
+    if(sa == NULL || addr == NULL || addr_len == NULL || port == NULL) {
+        return false;
+    }
+
+    switch(sa->sa_family) {
+        case AF_INET: {
+            const struct sockaddr_in *sa4 = (const struct sockaddr_in *)sa;
+            *addr = (const uint8_t *)&sa4->sin_addr;
+            *addr_len = 4;
+            *port = ntohs(sa4->sin_port);
+            return true;
+        }
+        case AF_INET6: {
+            const struct sockaddr_in6 *sa6 = (const struct sockaddr_in6 *)sa;
+            *addr = (const uint8_t *)&sa6->sin6_addr;
+            *addr_len = 16;
+            *port = ntohs(sa6->sin6_port);
+            return true;
+        }
+        default:
+            return false;
+    }
 }
 
 int
@@ -98,4 +115,3 @@ sock_blocking_copy(const int source, const int dest) {
 
     return ret;
 }
-

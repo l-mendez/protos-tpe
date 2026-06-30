@@ -1,5 +1,6 @@
 #include <stdlib.h>
 #include <string.h>
+#include <netinet/in.h>
 
 #include <check.h>
 
@@ -162,10 +163,55 @@ START_TEST(test_req_reply_format)
     buffer  buf;
     buffer_init(&buf, N(raw), raw);
 
-    fill_request_reply(&buf, SOCKS5_REP_CMD_NOT_SUPPORTED);
+    fill_request_reply(&buf, SOCKS5_REP_CMD_NOT_SUPPORTED, SOCKS5_ATYP_IPV4);
 
     /* VER REP RSV ATYP=IPv4 BND.ADDR(4)=0 BND.PORT(2)=0 -> 10 bytes */
     uint8_t expected[] = {0x05, 0x07, 0x00, 0x01, 0, 0, 0, 0, 0, 0};
+    for (size_t i = 0; i < N(expected); i++) {
+        ck_assert(buffer_can_read(&buf));
+        ck_assert_uint_eq(expected[i], buffer_read(&buf));
+    }
+    ck_assert(!buffer_can_read(&buf));
+}
+END_TEST
+
+START_TEST(test_req_reply_format_ipv6)
+{
+    uint8_t raw[32];
+    buffer  buf;
+    buffer_init(&buf, N(raw), raw);
+
+    fill_request_reply(&buf, SOCKS5_REP_SUCCESS, SOCKS5_ATYP_IPV6);
+
+    uint8_t expected[22] = {0x05, 0x00, 0x00, 0x04};
+    for (size_t i = 0; i < N(expected); i++) {
+        ck_assert(buffer_can_read(&buf));
+        ck_assert_uint_eq(expected[i], buffer_read(&buf));
+    }
+    ck_assert(!buffer_can_read(&buf));
+}
+END_TEST
+
+START_TEST(test_req_reply_addr_ipv4)
+{
+    uint8_t raw[16];
+    buffer  buf;
+    buffer_init(&buf, N(raw), raw);
+
+    struct sockaddr_in addr = {
+        .sin_family = AF_INET,
+        .sin_port   = htons(8080),
+    };
+    addr.sin_addr.s_addr = htonl(0x7F000001);
+
+    ck_assert(fill_request_reply_addr(&buf, SOCKS5_REP_SUCCESS,
+                                      (const struct sockaddr *)&addr));
+
+    uint8_t expected[] = {
+        0x05, SOCKS5_REP_SUCCESS, 0x00, SOCKS5_ATYP_IPV4,
+        127, 0, 0, 1,
+        0x1F, 0x90
+    };
     for (size_t i = 0; i < N(expected); i++) {
         ck_assert(buffer_can_read(&buf));
         ck_assert_uint_eq(expected[i], buffer_read(&buf));
@@ -187,6 +233,8 @@ Suite *suite(void)
     tcase_add_test(tc, test_req_bad_rsv);
     tcase_add_test(tc, test_req_unsupported_atyp);
     tcase_add_test(tc, test_req_reply_format);
+    tcase_add_test(tc, test_req_reply_format_ipv6);
+    tcase_add_test(tc, test_req_reply_addr_ipv4);
     suite_add_tcase(s, tc);
 
     return s;
