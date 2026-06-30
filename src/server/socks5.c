@@ -1188,6 +1188,17 @@ static void socks5_done(struct selector_key *key)
     }
 }
 
+/* Reloj monotónico (en segundos) para los timeouts del reaper y los sellos de
+ * actividad. A diferencia de time(NULL), es inmune a saltos del reloj de pared
+ * (NTP, ajuste de admin): un salto hacia adelante no cosecharía de golpe todos
+ * los túneles vivos, ni uno hacia atrás dejaría de cosechar a los muertos. */
+static time_t monotonic_now(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return ts.tv_sec;
+}
+
 /* Throttle del reaper: última vez que se recorrió la lista (evita recorrer más
  * de una vez por segundo). A nivel de archivo para que los tests puedan
  * resetearlo entre casos. */
@@ -1199,7 +1210,7 @@ static time_t reap_last_sweep = 0;
  * para no recorrer la lista más de una vez por segundo. */
 void socks5_reap_idle(fd_selector s)
 {
-    const time_t now = time(NULL);
+    const time_t now = monotonic_now();
     if (now == reap_last_sweep) {
         return;
     }
@@ -1276,7 +1287,7 @@ static bool is_read_state(unsigned st)
 static void socks5_advance(struct selector_key *key, unsigned st)
 {
     struct socks5_conn *c = key->data;
-    c->last_activity = time(NULL);
+    c->last_activity = monotonic_now();
     while (is_read_state(st) && buffer_can_read(&c->read_buffer)) {
         st = stm_handler_read(&c->stm, key);
     }
@@ -1372,7 +1383,7 @@ void socks5_passive_accept(struct selector_key *key)
         close(client);
         return;
     }
-    conn->last_activity = time(NULL);
+    conn->last_activity = monotonic_now();
     conn_list_push(conn);
     active_connections++;
 }
