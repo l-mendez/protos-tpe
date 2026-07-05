@@ -18,6 +18,7 @@ struct socks5args
 
     char* mng_addr;
     unsigned short mng_port;
+    struct users mng_admin;
 
     bool disectors_enabled;
 

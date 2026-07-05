@@ -19,6 +19,9 @@
 #include "../src/server/negotiation.c"
 #include "../src/server/request.c"
 #include "../src/server/auth.c"
+#include "../src/server/metrics.c"
+#include "../src/server/runtime_config.c"
+#include "../src/server/runtime_users.c"
 #include "../src/server/socks5.c"
 
 static fd_selector           test_selector;

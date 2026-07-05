@@ -37,6 +37,7 @@ Los objetos intermedios se generan bajo `obj/`.
 
 | Opción              | Descripción                                                        | Default       |
 | ------------------- | ------------------------------------------------------------------ | ------------- |
+| `-a <usr>:<pass>`   | credencial administradora para el protocolo de management          | requerida     |
 | `-l <dirección>`    | dirección de escucha del proxy SOCKS                               | `0.0.0.0`     |
 | `-p <puerto>`       | puerto de escucha del proxy SOCKS                                  | `1080`        |
 | `-L <dirección>`    | dirección de escucha del servicio de management                   | `127.0.0.1`   |
@@ -44,6 +45,42 @@ Los objetos intermedios se generan bajo `obj/`.
 | `-u <usr>:<pass>`   | credencial habilitada para el proxy (hasta 10 veces)              | —             |
 | `-h`                | imprime la ayuda y termina                                        | —             |
 | `-v`                | imprime la versión y termina                                      | —             |
+
+Ejemplo:
+
+```sh
+./bin/server -a admin:secret -u alice:old -L 127.0.0.1 -P 18080
+```
+
+## Cliente de Management
+
+```sh
+./bin/client -a <admin>:<pass> [OPCIÓN]... <subcomando>
+```
+
+| Opción              | Descripción                                      | Default       |
+| ------------------- | ------------------------------------------------ | ------------- |
+| `-a <usr>:<pass>`   | credencial administradora de management          | requerida     |
+| `-L <dirección>`    | dirección del servicio de management             | `127.0.0.1`   |
+| `-P <puerto>`       | puerto del servicio de management                | `8080`        |
+| `-h`                | imprime la ayuda y termina                       | —             |
+| `-v`                | imprime la versión y termina                     | —             |
+
+Subcomandos:
+
+```sh
+./bin/client -a admin:secret metrics
+./bin/client -a admin:secret users list
+./bin/client -a admin:secret users add bob hunter2
+./bin/client -a admin:secret users passwd bob newpass
+./bin/client -a admin:secret users del bob
+./bin/client -a admin:secret config list
+./bin/client -a admin:secret config get relay_idle_timeout_seconds
+./bin/client -a admin:secret config set relay_idle_timeout_seconds 120
+```
+
+El protocolo de management está documentado en
+[`docs/management-protocol.md`](docs/management-protocol.md).
 
 ## Pruebas
 

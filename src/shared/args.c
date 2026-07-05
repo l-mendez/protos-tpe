@@ -56,6 +56,7 @@ usage(const char* progname)
     fprintf(stderr,
             "Usage: %s [OPTION]...\n"
             "\n"
+            "   -a <name>:<pass> Usuario administrador para management.\n"
             "   -h               Imprime la ayuda y termina.\n"
             "   -l <SOCKS addr>  Dirección donde servirá el proxy SOCKS.\n"
             "   -L <conf  addr>  Dirección donde servirá el servicio de management.\n"
@@ -92,12 +93,15 @@ parse_args(const int argc, char** argv, struct socks5args* args)
             {0, 0, 0, 0}
         };
 
-        c = getopt_long(argc, argv, "hl:L:Np:P:u:v", long_options, &option_index);
+        c = getopt_long(argc, argv, "a:hl:L:Np:P:u:v", long_options, &option_index);
         if (c == -1)
             break;
 
         switch (c)
         {
+        case 'a':
+            user(optarg, &args->mng_admin);
+            break;
         case 'h':
             usage(argv[0]);
             break;

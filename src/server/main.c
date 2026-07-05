@@ -4,6 +4,9 @@
 #include <unistd.h>
 
 #include "args.h"
+#include "management.h"
+#include "metrics.h"
+#include "runtime_config.h"
 #include "selector.h"
 #include "server.h"
 #include "socks5.h"
@@ -38,6 +41,13 @@ main(const int argc, char **argv)
 {
     struct socks5args args;
     parse_args(argc, argv, &args);
+    if (args.mng_admin.name == NULL || args.mng_admin.pass == NULL) {
+        fprintf(stderr, "management admin required: use -a <name>:<pass>\n");
+        return 1;
+    }
+    metrics_reset();
+    runtime_config_init(args.disectors_enabled);
+    management_set_admin(args.mng_admin.name, args.mng_admin.pass);
     socks5_set_users(&args);
 
     /* Las escrituras a sockets cerrados no deben matar al proceso. */
@@ -49,12 +59,23 @@ main(const int argc, char **argv)
     fd_selector  selector = NULL;
 
     int passive = server_setup_passive(args.socks_addr, args.socks_port);
+    int management_passive = -1;
     if (passive < 0) {
         err = "no se pudo crear el socket de escucha";
         goto finally;
     }
     if (selector_fd_set_nio(passive) < 0) {
         err = "no se pudo poner el socket en modo no bloqueante";
+        goto finally;
+    }
+
+    management_passive = server_setup_passive(args.mng_addr, args.mng_port);
+    if (management_passive < 0) {
+        err = "no se pudo crear el socket de management";
+        goto finally;
+    }
+    if (selector_fd_set_nio(management_passive) < 0) {
+        err = "no se pudo poner el socket de management en modo no bloqueante";
         goto finally;
     }
 
@@ -83,7 +104,15 @@ main(const int argc, char **argv)
         goto finally;
     }
 
+    const fd_handler management_passive_handler = { .handle_read = management_passive_accept };
+    if (selector_register(selector, management_passive, &management_passive_handler,
+                          OP_READ, NULL) != SELECTOR_SUCCESS) {
+        err = "no se pudo registrar el socket de management";
+        goto finally;
+    }
+
     printf("socks5 escuchando en %s:%hu\n", args.socks_addr, args.socks_port);
+    printf("management escuchando en %s:%hu\n", args.mng_addr, args.mng_port);
 
     bool accepting = true;
     while (true) {
@@ -101,15 +130,19 @@ main(const int argc, char **argv)
                 selector_unregister_fd(selector, passive);
                 close(passive);
                 passive    = -1;
+                selector_unregister_fd(selector, management_passive);
+                close(management_passive);
+                management_passive = -1;
                 accepting  = false;
-                printf("apagando: drenando %zu conexion(es)\n",
-                       socks5_active_connections());
+                printf("apagando: drenando %zu SOCKS y %zu management conexion(es)\n",
+                       socks5_active_connections(), management_active_connections());
             }
             /* Salir cuando no quedan conexiones, o si llega una segunda señal. */
             if (terminate > 1) {
                 break;
             }
-            if (socks5_active_connections() == 0) {
+            if (socks5_active_connections() == 0 &&
+                management_active_connections() == 0) {
                 break;
             }
         }
@@ -127,6 +160,9 @@ finally:
     selector_close();
     if (passive >= 0) {
         close(passive);
+    }
+    if (management_passive >= 0) {
+        close(management_passive);
     }
     return ret;
 }

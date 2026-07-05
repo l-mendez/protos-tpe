@@ -14,8 +14,11 @@
 #include "args.h"
 #include "auth.h"
 #include "buffer.h"
+#include "metrics.h"
 #include "negotiation.h"
 #include "request.h"
+#include "runtime_config.h"
+#include "runtime_users.h"
 #include "socks5.h"
 #include "stm.h"
 
@@ -144,6 +147,7 @@ static void conn_mark_inactive(struct socks5_conn *c)
     if (c->active_counted) {
         c->active_counted = false;
         active_connections--;
+        metrics_socks_connection_closed();
     }
 }
 
@@ -500,42 +504,16 @@ static bool resolver_is_completed(struct socks5_conn *c)
     return completed;
 }
 
-/* Usuarios configurados por línea de comandos (-u user:pass). Apuntan al arreglo
- * de `struct socks5args`, que vive durante toda la ejecución en main(). */
-static const struct users *configured_users = NULL;
-
 void socks5_set_users(const struct socks5args *args)
 {
-    configured_users = args->users;
+    runtime_users_init_from_args(args == NULL ? NULL : args->users);
 }
 
 /* true si hay al menos un usuario configurado: en ese caso la autenticación
  * user/pass es obligatoria durante la negociación. */
 static bool auth_required(void)
 {
-    return configured_users != NULL && configured_users[0].name != NULL;
-}
-
-/* Valida user/pass contra los usuarios configurados. El arreglo está terminado
- * por un name == NULL (o llega a MAX_USERS): no hay contador explícito.
- *
- * La comparación es por longitud (memcmp), no strcmp: el usuario y la contraseña
- * son cadenas con longitud explícita (RFC 1929) que podrían contener un 0x00. Se
- * rechazan las credenciales vacías. */
-static bool credentials_match(const uint8_t *user, size_t ulen,
-                              const uint8_t *pass, size_t plen)
-{
-    if (configured_users == NULL || ulen == 0 || plen == 0) {
-        return false;
-    }
-    for (int i = 0; i < MAX_USERS && configured_users[i].name != NULL; i++) {
-        const char *name = configured_users[i].name;
-        const char *pw   = configured_users[i].pass;
-        if (strlen(name) == ulen && memcmp(name, user, ulen) == 0) {
-            return strlen(pw) == plen && memcmp(pw, pass, plen) == 0;
-        }
-    }
-    return false;
+    return runtime_users_auth_required();
 }
 
 size_t socks5_active_connections(void)
@@ -658,8 +636,14 @@ static unsigned auth_read(struct selector_key *key)
         return AUTH_READ; /* lectura parcial: esperar más datos */
     }
 
-    bool ok = credentials_match(c->auth.uname, c->auth.ulen,
-                                c->auth.passwd, c->auth.plen);
+    bool ok = runtime_users_validate(c->auth.uname, c->auth.ulen,
+                                     c->auth.passwd, c->auth.plen,
+                                     NULL, 0);
+    if (ok) {
+        metrics_auth_success();
+    } else {
+        metrics_auth_failure();
+    }
     c->auth_status = ok ? SOCKS5_AUTH_OK : SOCKS5_AUTH_FAIL;
     fill_auth_reply(&c->write_buffer, c->auth_status);
     if (selector_set_interest_key(key, OP_WRITE) != SELECTOR_SUCCESS) {
@@ -859,6 +843,7 @@ static unsigned request_resolve_done(struct selector_key *key)
 
     if (c->resolution == NULL) {
         /* getaddrinfo no distingue causas que mapeen limpio a un REP de §6. */
+        metrics_connect_failure();
         return request_fail(key, SOCKS5_REP_GENERAL_FAILURE);
     }
     c->next_addr = c->resolution;
@@ -888,6 +873,7 @@ static unsigned request_connect_success(struct selector_key *key)
     if (selector_set_interest(key->s, c->client_fd, OP_WRITE) != SELECTOR_SUCCESS) {
         return ERROR;
     }
+    metrics_connect_success();
     return REQ_WRITE;
 }
 
@@ -943,6 +929,7 @@ static unsigned request_connect(struct selector_key *key)
     }
 
     /* Todas las direcciones fallaron. */
+    metrics_connect_failure();
     return request_fail(key, rep_from_errno(c->last_errno));
 }
 
@@ -1115,6 +1102,11 @@ static unsigned relay_write(struct selector_key *key)
 
     if (n > 0) {
         buffer_read_adv(src, n);
+        if (to_client) {
+            metrics_add_origin_to_client_bytes((uint64_t)n);
+        } else {
+            metrics_add_client_to_origin_bytes((uint64_t)n);
+        }
         return relay_update(c);
     }
     if (n < 0 && would_block(errno)) {
@@ -1251,14 +1243,16 @@ void socks5_reap_idle(fd_selector s)
             continue;
         }
 
-        const time_t timeout = (st == RELAY) ? SOCKS5_RELAY_IDLE_TIMEOUT
-                                             : SOCKS5_INACTIVITY_TIMEOUT;
+        const time_t timeout = (st == RELAY)
+            ? (time_t)runtime_config_relay_idle_timeout_seconds()
+            : (time_t)runtime_config_handshake_timeout_seconds();
         if (now - c->last_activity < timeout) {
             c = nxt;
             continue;
         }
 
         if (st == REQ_CONNECTING) {
+            metrics_connect_failure();
             unsigned next = request_fail(&key, SOCKS5_REP_TTL_EXPIRED);
             if (next == ERROR || next == DONE) {
                 socks5_done(&key);
@@ -1272,6 +1266,7 @@ void socks5_reap_idle(fd_selector s)
                 conn_mark_inactive(c);
                 conn_free_if_unreferenced(c);
             } else {
+                metrics_connect_failure();
                 unsigned next = request_fail(&key, SOCKS5_REP_GENERAL_FAILURE);
                 if (next == ERROR || next == DONE) {
                     socks5_done(&key);
@@ -1399,4 +1394,5 @@ void socks5_passive_accept(struct selector_key *key)
     conn->last_activity = monotonic_now();
     conn_list_push(conn);
     active_connections++;
+    metrics_socks_connection_opened();
 }
