@@ -14,6 +14,11 @@
  * (deja de aceptar y drena), una segunda fuerza la salida inmediata. */
 static volatile sig_atomic_t terminate = 0;
 
+struct server_runtime {
+    fd_selector selector;
+    int         passive;
+};
+
 static void
 signal_handler(const int signal)
 {
@@ -33,6 +38,23 @@ install_signal_handlers(void)
     sigaction(SIGINT, &sa, NULL);
 }
 
+static int
+server_cleanup(struct server_runtime *runtime, const int ret, const char *err)
+{
+    if (err != NULL) {
+        fprintf(stderr, "%s\n", err);
+    }
+    socks5_resolver_pool_stop();
+    if (runtime->selector != NULL) {
+        selector_destroy(runtime->selector);
+    }
+    selector_close();
+    if (runtime->passive >= 0) {
+        close(runtime->passive);
+    }
+    return ret;
+}
+
 int
 main(const int argc, char **argv)
 {
@@ -44,18 +66,19 @@ main(const int argc, char **argv)
     signal(SIGPIPE, SIG_IGN);
     install_signal_handlers();
 
-    int          ret      = 1;
-    const char  *err      = NULL;
-    fd_selector  selector = NULL;
+    struct server_runtime runtime = {
+        .selector = NULL,
+        .passive  = -1,
+    };
 
-    int passive = server_setup_passive(args.socks_addr, args.socks_port);
-    if (passive < 0) {
-        err = "no se pudo crear el socket de escucha";
-        goto finally;
+    runtime.passive = server_setup_passive(args.socks_addr, args.socks_port);
+    if (runtime.passive < 0) {
+        return server_cleanup(&runtime, 1,
+                              "no se pudo crear el socket de escucha");
     }
-    if (selector_fd_set_nio(passive) < 0) {
-        err = "no se pudo poner el socket en modo no bloqueante";
-        goto finally;
+    if (selector_fd_set_nio(runtime.passive) < 0) {
+        return server_cleanup(&runtime, 1,
+                              "no se pudo poner el socket en modo no bloqueante");
     }
 
     const struct selector_init conf = {
@@ -63,44 +86,44 @@ main(const int argc, char **argv)
         .select_timeout = { .tv_sec = 10, .tv_nsec = 0 },
     };
     if (selector_init(&conf) != SELECTOR_SUCCESS) {
-        err = "no se pudo inicializar el selector";
-        goto finally;
+        return server_cleanup(&runtime, 1,
+                              "no se pudo inicializar el selector");
     }
 
-    selector = selector_new(MAX_CONNECTIONS);
-    if (selector == NULL) {
-        err = "no se pudo crear el selector";
-        goto finally;
+    runtime.selector = selector_new(MAX_CONNECTIONS);
+    if (runtime.selector == NULL) {
+        return server_cleanup(&runtime, 1,
+                              "no se pudo crear el selector");
     }
     if (!socks5_resolver_pool_start()) {
-        err = "no se pudo iniciar el pool de resolución DNS";
-        goto finally;
+        return server_cleanup(&runtime, 1,
+                              "no se pudo iniciar el pool de resolución DNS");
     }
 
     const fd_handler passive_handler = { .handle_read = socks5_passive_accept };
-    if (selector_register(selector, passive, &passive_handler, OP_READ, NULL) != SELECTOR_SUCCESS) {
-        err = "no se pudo registrar el socket de escucha";
-        goto finally;
+    if (selector_register(runtime.selector, runtime.passive, &passive_handler,
+                          OP_READ, NULL) != SELECTOR_SUCCESS) {
+        return server_cleanup(&runtime, 1,
+                              "no se pudo registrar el socket de escucha");
     }
 
     printf("socks5 escuchando en %s:%hu\n", args.socks_addr, args.socks_port);
 
     bool accepting = true;
     while (true) {
-        if (selector_select(selector) != SELECTOR_SUCCESS) {
-            err = "fallo en selector_select";
-            goto finally;
+        if (selector_select(runtime.selector) != SELECTOR_SUCCESS) {
+            return server_cleanup(&runtime, 1, "fallo en selector_select");
         }
 
-        socks5_reap_idle(selector);
+        socks5_reap_idle(runtime.selector);
 
         if (terminate) {
             if (accepting) {
                 /* Apagado ordenado: dejar de aceptar nuevas conexiones y
                  * drenar las que siguen vivas. */
-                selector_unregister_fd(selector, passive);
-                close(passive);
-                passive    = -1;
+                selector_unregister_fd(runtime.selector, runtime.passive);
+                close(runtime.passive);
+                runtime.passive = -1;
                 accepting  = false;
                 printf("apagando: drenando %zu conexion(es)\n",
                        socks5_active_connections());
@@ -114,19 +137,5 @@ main(const int argc, char **argv)
             }
         }
     }
-    ret = 0;
-
-finally:
-    if (err != NULL) {
-        fprintf(stderr, "%s\n", err);
-    }
-    socks5_resolver_pool_stop();
-    if (selector != NULL) {
-        selector_destroy(selector);
-    }
-    selector_close();
-    if (passive >= 0) {
-        close(passive);
-    }
-    return ret;
+    return server_cleanup(&runtime, 0, NULL);
 }
