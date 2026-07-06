@@ -70,7 +70,9 @@ static const struct state_definition statbl[] = {
 
 //static bool init = false;
 
-START_TEST (test_buffer_misc) {
+static void
+test_buffer_misc(void)
+{
     struct state_machine stm = {
         .initial   = A,
         .max_state = C,
@@ -83,42 +85,41 @@ START_TEST (test_buffer_misc) {
         .data = &data,
     };
     stm_init(&stm);
-    ck_assert_uint_eq(A, stm_state(&stm));
-    ck_assert_uint_eq(false,  data.arrived[A]);
-    ck_assert_uint_eq(false,  data.arrived[B]);
-    ck_assert_uint_eq(false,  data.arrived[C]);
-    ck_assert_ptr_null(stm.current);
+    assert_uint_eq(A, stm_state(&stm));
+    assert_uint_eq(false,  data.arrived[A]);
+    assert_uint_eq(false,  data.arrived[B]);
+    assert_uint_eq(false,  data.arrived[C]);
+    assert_ptr_null(stm.current);
 
     stm_handler_read(&stm, &key);
-    ck_assert_uint_eq(B,     stm_state(&stm));
-    ck_assert_uint_eq(true,  data.arrived[A]);
-    ck_assert_uint_eq(true,  data.arrived[B]);
-    ck_assert_uint_eq(false, data.arrived[C]);
-    ck_assert_uint_eq(true,  data.departed[A]);
-    ck_assert_uint_eq(false, data.departed[B]);
-    ck_assert_uint_eq(false, data.departed[C]);
+    assert_uint_eq(B,     stm_state(&stm));
+    assert_uint_eq(true,  data.arrived[A]);
+    assert_uint_eq(true,  data.arrived[B]);
+    assert_uint_eq(false, data.arrived[C]);
+    assert_uint_eq(true,  data.departed[A]);
+    assert_uint_eq(false, data.departed[B]);
+    assert_uint_eq(false, data.departed[C]);
 
     stm_handler_write(&stm, &key);
-    ck_assert_uint_eq(C,     stm_state(&stm));
-    ck_assert_uint_eq(true,  data.arrived[A]);
-    ck_assert_uint_eq(true,  data.arrived[B]);
-    ck_assert_uint_eq(true,  data.arrived[C]);
-    ck_assert_uint_eq(true,  data.departed[A]);
-    ck_assert_uint_eq(true,  data.departed[B]);
-    ck_assert_uint_eq(false, data.departed[C]);
+    assert_uint_eq(C,     stm_state(&stm));
+    assert_uint_eq(true,  data.arrived[A]);
+    assert_uint_eq(true,  data.arrived[B]);
+    assert_uint_eq(true,  data.arrived[C]);
+    assert_uint_eq(true,  data.departed[A]);
+    assert_uint_eq(true,  data.departed[B]);
+    assert_uint_eq(false, data.departed[C]);
 
     stm_handler_read(&stm, &key);
-    ck_assert_uint_eq(C,     stm_state(&stm));
-    ck_assert_uint_eq(true,  data.arrived[A]);
-    ck_assert_uint_eq(true,  data.arrived[B]);
-    ck_assert_uint_eq(true,  data.arrived[C]);
-    ck_assert_uint_eq(true,  data.departed[A]);
-    ck_assert_uint_eq(true,  data.departed[B]);
-    ck_assert_uint_eq(false, data.departed[C]);
+    assert_uint_eq(C,     stm_state(&stm));
+    assert_uint_eq(true,  data.arrived[A]);
+    assert_uint_eq(true,  data.arrived[B]);
+    assert_uint_eq(true,  data.arrived[C]);
+    assert_uint_eq(true,  data.departed[A]);
+    assert_uint_eq(true,  data.departed[B]);
+    assert_uint_eq(false, data.departed[C]);
 
     stm_handler_close(&stm, &key);
 }
-END_TEST
 
 int
 main(void)

@@ -17,13 +17,14 @@ static auth_state feed_bytes(struct socks5_auth *p, buffer *b, const uint8_t *by
 {
     size_t   space;
     uint8_t *ptr = buffer_write_ptr(b, &space);
-    ck_assert_uint_ge(space, len);
+    assert_uint_ge(space, len);
     memcpy(ptr, bytes, len);
     buffer_write_adv(b, len);
     return auth_parser_feed(p, b);
 }
 
-START_TEST(test_auth_happy)
+static void
+test_auth_happy(void)
 {
     struct socks5_auth p;
     auth_parser_init(&p);
@@ -36,16 +37,16 @@ START_TEST(test_auth_happy)
     uint8_t msg[] = {0x01, 0x04, 'a', 'l', 'a', 'n', 0x03, 'p', 'w', 'd'};
     auth_state st = feed_bytes(&p, &buf, msg, N(msg));
 
-    ck_assert_int_eq(AUTH_DONE, st);
-    ck_assert(auth_done(&p));
-    ck_assert_uint_eq(4, p.ulen);
-    ck_assert_str_eq("alan", (char *)p.uname);
-    ck_assert_uint_eq(3, p.plen);
-    ck_assert_str_eq("pwd", (char *)p.passwd);
+    assert_int_eq(AUTH_DONE, st);
+    assert(auth_done(&p));
+    assert_uint_eq(4, p.ulen);
+    assert_str_eq("alan", (char *)p.uname);
+    assert_uint_eq(3, p.plen);
+    assert_str_eq("pwd", (char *)p.passwd);
 }
-END_TEST
 
-START_TEST(test_auth_wrong_version)
+static void
+test_auth_wrong_version(void)
 {
     struct socks5_auth p;
     auth_parser_init(&p);
@@ -57,12 +58,12 @@ START_TEST(test_auth_wrong_version)
     uint8_t msg[] = {0x05, 0x01, 'a', 0x01, 'b'}; /* VER=5 -> invalid (auth is 0x01) */
     auth_state st = feed_bytes(&p, &buf, msg, N(msg));
 
-    ck_assert_int_eq(AUTH_ERROR, st);
+    assert_int_eq(AUTH_ERROR, st);
 }
-END_TEST
 
 /* RFC 1929 allows ULEN/PLEN of 0; the parser must skip the empty field. */
-START_TEST(test_auth_empty_fields)
+static void
+test_auth_empty_fields(void)
 {
     struct socks5_auth p;
     auth_parser_init(&p);
@@ -74,17 +75,17 @@ START_TEST(test_auth_empty_fields)
     uint8_t msg[] = {0x01, 0x00, 0x00}; /* empty username, empty password */
     auth_state st = feed_bytes(&p, &buf, msg, N(msg));
 
-    ck_assert_int_eq(AUTH_DONE, st);
-    ck_assert_uint_eq(0, p.ulen);
-    ck_assert_str_eq("", (char *)p.uname);
-    ck_assert_uint_eq(0, p.plen);
-    ck_assert_str_eq("", (char *)p.passwd);
+    assert_int_eq(AUTH_DONE, st);
+    assert_uint_eq(0, p.ulen);
+    assert_str_eq("", (char *)p.uname);
+    assert_uint_eq(0, p.plen);
+    assert_str_eq("", (char *)p.passwd);
 }
-END_TEST
 
 /* Partial reads: the same message delivered one byte per feed must parse
  * identically. This is the core "manejar lecturas parciales" requirement. */
-START_TEST(test_auth_split_feed)
+static void
+test_auth_split_feed(void)
 {
     struct socks5_auth p;
     auth_parser_init(&p);
@@ -98,17 +99,17 @@ START_TEST(test_auth_split_feed)
     for (size_t i = 0; i < N(msg); i++) {
         st = feed_bytes(&p, &buf, &msg[i], 1);
         if (i < N(msg) - 1) {
-            ck_assert_int_ne(AUTH_DONE, st);
-            ck_assert_int_ne(AUTH_ERROR, st);
+            assert_int_ne(AUTH_DONE, st);
+            assert_int_ne(AUTH_ERROR, st);
         }
     }
-    ck_assert_int_eq(AUTH_DONE, st);
-    ck_assert_str_eq("alan", (char *)p.uname);
-    ck_assert_str_eq("pwd", (char *)p.passwd);
+    assert_int_eq(AUTH_DONE, st);
+    assert_str_eq("alan", (char *)p.uname);
+    assert_str_eq("pwd", (char *)p.passwd);
 }
-END_TEST
 
-START_TEST(test_auth_max_lengths)
+static void
+test_auth_max_lengths(void)
 {
     struct socks5_auth p;
     auth_parser_init(&p);
@@ -126,30 +127,29 @@ START_TEST(test_auth_max_lengths)
     for (int k = 0; k < 255; k++) msg[i++] = 'p';
 
     auth_state st = feed_bytes(&p, &buf, msg, i);
-    ck_assert_int_eq(AUTH_DONE, st);
-    ck_assert_uint_eq(255, p.ulen);
-    ck_assert_uint_eq(255, p.plen);
-    ck_assert_uint_eq('\0', p.uname[255]);
-    ck_assert_uint_eq('\0', p.passwd[255]);
+    assert_int_eq(AUTH_DONE, st);
+    assert_uint_eq(255, p.ulen);
+    assert_uint_eq(255, p.plen);
+    assert_uint_eq('\0', p.uname[255]);
+    assert_uint_eq('\0', p.passwd[255]);
 }
-END_TEST
 
-START_TEST(test_auth_reply_format)
+static void
+test_auth_reply_format(void)
 {
     uint8_t outraw[8];
     buffer  out;
     buffer_init(&out, N(outraw), outraw);
 
     fill_auth_reply(&out, SOCKS5_AUTH_OK);
-    ck_assert_uint_eq(0x01, buffer_read(&out)); /* VER del subprotocolo de auth */
-    ck_assert_uint_eq(0x00, buffer_read(&out)); /* STATUS = success */
+    assert_uint_eq(0x01, buffer_read(&out)); /* VER del subprotocolo de auth */
+    assert_uint_eq(0x00, buffer_read(&out)); /* STATUS = success */
 
     buffer_reset(&out);
     fill_auth_reply(&out, SOCKS5_AUTH_FAIL);
-    ck_assert_uint_eq(0x01, buffer_read(&out));
-    ck_assert_uint_eq(0x01, buffer_read(&out));
+    assert_uint_eq(0x01, buffer_read(&out));
+    assert_uint_eq(0x01, buffer_read(&out));
 }
-END_TEST
 
 int
 main(void)

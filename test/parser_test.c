@@ -64,14 +64,16 @@ static struct parser_definition definition = {
 
 static void
 assert_eq(const unsigned type, const int c, const struct parser_event *e) {
-    ck_assert_ptr_eq (0,    e->next);
-    ck_assert_uint_eq(1,    e->n);
-    ck_assert_uint_eq(type, e->type);
-    ck_assert_uint_eq(c,    e->data[0]);
+    assert_ptr_eq (0,    e->next);
+    assert_uint_eq(1,    e->n);
+    assert_uint_eq(type, e->type);
+    assert_uint_eq(c,    e->data[0]);
 
 }
 
-START_TEST (test_basic) {
+static void
+test_basic(void)
+{
     struct parser *parser = parser_init(parser_no_classes(), &definition);
     assert_eq(FOO,  'f', parser_feed(parser, 'f'));
     assert_eq(FOO,  'F', parser_feed(parser, 'F'));
@@ -80,7 +82,6 @@ START_TEST (test_basic) {
 
     parser_destroy(parser);
 }
-END_TEST
 
 int
 main(void)

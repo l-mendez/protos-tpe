@@ -5,7 +5,9 @@
 
 #include "netutils.h"
 
-START_TEST (test_sockaddr_to_human_ipv4) {
+static void
+test_sockaddr_to_human_ipv4(void)
+{
     char buff[50] = {0};
 
     struct sockaddr_in addr = {
@@ -15,20 +17,21 @@ START_TEST (test_sockaddr_to_human_ipv4) {
     addr.sin_addr.s_addr = htonl(0x01020304);
     const struct sockaddr *x = (const struct sockaddr *) &addr;
 
-    ck_assert_str_eq(sockaddr_to_human(buff, sizeof(buff)/sizeof(buff[0]), x),
+    assert_str_eq(sockaddr_to_human(buff, sizeof(buff)/sizeof(buff[0]), x),
                      "1.2.3.4:9090");
-    ck_assert_str_eq(sockaddr_to_human(buff, 5,  x), "unkn");
-    ck_assert_str_eq(sockaddr_to_human(buff, 8,  x), "1.2.3.4");
-    ck_assert_str_eq(sockaddr_to_human(buff, 9,  x), "1.2.3.4:");
-    ck_assert_str_eq(sockaddr_to_human(buff, 10, x), "1.2.3.4:9");
-    ck_assert_str_eq(sockaddr_to_human(buff, 11, x), "1.2.3.4:90");
-    ck_assert_str_eq(sockaddr_to_human(buff, 12, x), "1.2.3.4:909");
-    ck_assert_str_eq(sockaddr_to_human(buff, 13, x), "1.2.3.4:9090");
+    assert_str_eq(sockaddr_to_human(buff, 5,  x), "unkn");
+    assert_str_eq(sockaddr_to_human(buff, 8,  x), "1.2.3.4");
+    assert_str_eq(sockaddr_to_human(buff, 9,  x), "1.2.3.4:");
+    assert_str_eq(sockaddr_to_human(buff, 10, x), "1.2.3.4:9");
+    assert_str_eq(sockaddr_to_human(buff, 11, x), "1.2.3.4:90");
+    assert_str_eq(sockaddr_to_human(buff, 12, x), "1.2.3.4:909");
+    assert_str_eq(sockaddr_to_human(buff, 13, x), "1.2.3.4:9090");
 }
-END_TEST
 
 
-START_TEST (test_sockaddr_to_human_ipv6) {
+static void
+test_sockaddr_to_human_ipv6(void)
+{
     char buff[50] = {0};
 
     struct sockaddr_in6 addr = {
@@ -41,24 +44,24 @@ START_TEST (test_sockaddr_to_human_ipv6) {
     }
 
     const struct sockaddr *x = (const struct sockaddr *) &addr;
-    ck_assert_str_eq(sockaddr_to_human(buff, 10, x), "unknown i");
-    ck_assert_str_eq(sockaddr_to_human(buff, 39, x), "unknown ip:9090");
-    ck_assert_str_eq(sockaddr_to_human(buff, 40, x),
+    assert_str_eq(sockaddr_to_human(buff, 10, x), "unknown i");
+    assert_str_eq(sockaddr_to_human(buff, 39, x), "unknown ip:9090");
+    assert_str_eq(sockaddr_to_human(buff, 40, x),
         "ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff");
-    ck_assert_str_eq(sockaddr_to_human(buff, 41, x),
+    assert_str_eq(sockaddr_to_human(buff, 41, x),
         "ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff:");
-    ck_assert_str_eq(sockaddr_to_human(buff, 42, x),
+    assert_str_eq(sockaddr_to_human(buff, 42, x),
         "ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff:9");
-    ck_assert_str_eq(sockaddr_to_human(buff, 43, x),
+    assert_str_eq(sockaddr_to_human(buff, 43, x),
         "ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff:90");
-    ck_assert_str_eq(sockaddr_to_human(buff, 44, x),
+    assert_str_eq(sockaddr_to_human(buff, 44, x),
         "ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff:909");
-    ck_assert_str_eq(sockaddr_to_human(buff, 45, x),
+    assert_str_eq(sockaddr_to_human(buff, 45, x),
         "ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff:9090");
 }
-END_TEST
 
-START_TEST(test_sockaddr_get_addr_port_ipv4)
+static void
+test_sockaddr_get_addr_port_ipv4(void)
 {
     struct sockaddr_in addr = {
         .sin_family = AF_INET,
@@ -69,16 +72,16 @@ START_TEST(test_sockaddr_get_addr_port_ipv4)
     const uint8_t *addr_bytes = NULL;
     size_t         addr_len   = 0;
     uint16_t       port       = 0;
-    ck_assert(sockaddr_get_addr_port((const struct sockaddr *)&addr,
+    assert(sockaddr_get_addr_port((const struct sockaddr *)&addr,
                                      &addr_bytes, &addr_len, &port));
-    ck_assert_uint_eq(4, addr_len);
-    ck_assert_uint_eq(1080, port);
-    ck_assert_uint_eq(127, addr_bytes[0]);
-    ck_assert_uint_eq(1, addr_bytes[3]);
+    assert_uint_eq(4, addr_len);
+    assert_uint_eq(1080, port);
+    assert_uint_eq(127, addr_bytes[0]);
+    assert_uint_eq(1, addr_bytes[3]);
 }
-END_TEST
 
-START_TEST(test_sockaddr_get_addr_port_ipv6)
+static void
+test_sockaddr_get_addr_port_ipv6(void)
 {
     struct sockaddr_in6 addr = {
         .sin6_family = AF_INET6,
@@ -92,25 +95,24 @@ START_TEST(test_sockaddr_get_addr_port_ipv6)
     const uint8_t *addr_bytes = NULL;
     size_t         addr_len   = 0;
     uint16_t       port       = 0;
-    ck_assert(sockaddr_get_addr_port((const struct sockaddr *)&addr,
+    assert(sockaddr_get_addr_port((const struct sockaddr *)&addr,
                                      &addr_bytes, &addr_len, &port));
-    ck_assert_uint_eq(16, addr_len);
-    ck_assert_uint_eq(9090, port);
-    ck_assert_uint_eq(0, addr_bytes[0]);
-    ck_assert_uint_eq(15, addr_bytes[15]);
+    assert_uint_eq(16, addr_len);
+    assert_uint_eq(9090, port);
+    assert_uint_eq(0, addr_bytes[0]);
+    assert_uint_eq(15, addr_bytes[15]);
 }
-END_TEST
 
-START_TEST(test_sockaddr_get_addr_port_rejects_unknown_family)
+static void
+test_sockaddr_get_addr_port_rejects_unknown_family(void)
 {
     struct sockaddr addr = { .sa_family = AF_UNIX };
     const uint8_t *addr_bytes = NULL;
     size_t         addr_len   = 0;
     uint16_t       port       = 0;
 
-    ck_assert(!sockaddr_get_addr_port(&addr, &addr_bytes, &addr_len, &port));
+    assert(!sockaddr_get_addr_port(&addr, &addr_bytes, &addr_len, &port));
 }
-END_TEST
 
 int
 main(void)

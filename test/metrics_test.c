@@ -19,18 +19,19 @@ static void reset_metrics(void)
     bytes_origin_to_client     = 0;
 }
 
-START_TEST(test_metrics_initial)
+static void
+test_metrics_initial(void)
 {
     reset_metrics();
     struct metrics_snapshot s = metrics_get();
-    ck_assert_uint_eq(0, s.historical_connections);
-    ck_assert_uint_eq(0, s.concurrent_connections);
-    ck_assert_uint_eq(0, s.max_concurrent_connections);
-    ck_assert_uint_eq(0, s.total_bytes);
+    assert_uint_eq(0, s.historical_connections);
+    assert_uint_eq(0, s.concurrent_connections);
+    assert_uint_eq(0, s.max_concurrent_connections);
+    assert_uint_eq(0, s.total_bytes);
 }
-END_TEST
 
-START_TEST(test_metrics_connections_and_peak)
+static void
+test_metrics_connections_and_peak(void)
 {
     reset_metrics();
 
@@ -39,37 +40,37 @@ START_TEST(test_metrics_connections_and_peak)
     metrics_connection_opened(); /* concurrent=3, hist=3, max=3 */
 
     struct metrics_snapshot s = metrics_get();
-    ck_assert_uint_eq(3, s.historical_connections);
-    ck_assert_uint_eq(3, s.concurrent_connections);
-    ck_assert_uint_eq(3, s.max_concurrent_connections);
+    assert_uint_eq(3, s.historical_connections);
+    assert_uint_eq(3, s.concurrent_connections);
+    assert_uint_eq(3, s.max_concurrent_connections);
 
     metrics_connection_closed(); /* concurrent=2 */
     metrics_connection_closed(); /* concurrent=1 */
 
     s = metrics_get();
     /* histórico y pico no bajan; concurrentes sí */
-    ck_assert_uint_eq(3, s.historical_connections);
-    ck_assert_uint_eq(1, s.concurrent_connections);
-    ck_assert_uint_eq(3, s.max_concurrent_connections);
+    assert_uint_eq(3, s.historical_connections);
+    assert_uint_eq(1, s.concurrent_connections);
+    assert_uint_eq(3, s.max_concurrent_connections);
 
     metrics_connection_opened(); /* concurrent=2, hist=4, max sigue 3 */
     s = metrics_get();
-    ck_assert_uint_eq(4, s.historical_connections);
-    ck_assert_uint_eq(2, s.concurrent_connections);
-    ck_assert_uint_eq(3, s.max_concurrent_connections);
+    assert_uint_eq(4, s.historical_connections);
+    assert_uint_eq(2, s.concurrent_connections);
+    assert_uint_eq(3, s.max_concurrent_connections);
 }
-END_TEST
 
-START_TEST(test_metrics_close_never_underflows)
+static void
+test_metrics_close_never_underflows(void)
 {
     reset_metrics();
     metrics_connection_closed(); /* sin aperturas previas: no debe underflowear */
     struct metrics_snapshot s = metrics_get();
-    ck_assert_uint_eq(0, s.concurrent_connections);
+    assert_uint_eq(0, s.concurrent_connections);
 }
-END_TEST
 
-START_TEST(test_metrics_bytes)
+static void
+test_metrics_bytes(void)
 {
     reset_metrics();
     metrics_bytes_client_to_origin(100);
@@ -77,11 +78,10 @@ START_TEST(test_metrics_bytes)
     metrics_bytes_origin_to_client(400);
 
     struct metrics_snapshot s = metrics_get();
-    ck_assert_uint_eq(150, s.bytes_client_to_origin);
-    ck_assert_uint_eq(400, s.bytes_origin_to_client);
-    ck_assert_uint_eq(550, s.total_bytes);
+    assert_uint_eq(150, s.bytes_client_to_origin);
+    assert_uint_eq(400, s.bytes_origin_to_client);
+    assert_uint_eq(550, s.total_bytes);
 }
-END_TEST
 
 int
 main(void)

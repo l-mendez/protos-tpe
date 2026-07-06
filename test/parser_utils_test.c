@@ -6,14 +6,16 @@
 
 static void
 assert_eq(const unsigned type, const int c, const struct parser_event *e) {
-    ck_assert_ptr_eq (0,    e->next);
-    ck_assert_uint_eq(1,    e->n);
-    ck_assert_uint_eq(type, e->type);
-    ck_assert_uint_eq(c,    e->data[0]);
+    assert_ptr_eq (0,    e->next);
+    assert_uint_eq(1,    e->n);
+    assert_uint_eq(type, e->type);
+    assert_uint_eq(c,    e->data[0]);
 
 }
 
-START_TEST (test_eq) {
+static void
+test_eq(void)
+{
     const struct parser_definition d = parser_utils_strcmpi("foo");
 
     struct parser *parser = parser_init(parser_no_classes(), &d);
@@ -26,7 +28,6 @@ START_TEST (test_eq) {
     parser_destroy(parser);
     parser_utils_strcmpi_destroy(&d);
 }
-END_TEST
 
 int
 main(void)
