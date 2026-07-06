@@ -21,9 +21,5 @@ endif
 COMPILER_FLAGS=$(STD_FLAGS) $(FEATURE_FLAGS) $(WARN_FLAGS) $(INCLUDE_FLAGS) -g $(EXTRA_CFLAGS)
 LD_FLAGS=-pthread
 
-# Unit tests are written against the Check framework (libcheck.github.io/check).
-# Discover it through pkg-config when available so out-of-path installs (e.g.
-# Homebrew on macOS) work; fall back to a plain -lcheck otherwise.
-# Treat Check's headers as system headers so -pedantic stays silent about them.
-TEST_CFLAGS=$(shell pkg-config --cflags check 2>/dev/null | sed 's/-I/-isystem /g')
-TEST_LD_FLAGS=$(shell pkg-config --libs check 2>/dev/null || echo -lcheck) -pthread
+TEST_CFLAGS=
+TEST_LD_FLAGS=-pthread

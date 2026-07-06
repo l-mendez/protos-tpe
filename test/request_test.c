@@ -2,7 +2,7 @@
 #include <string.h>
 #include <netinet/in.h>
 
-#include <check.h>
+#include "test_assert.h"
 
 #include "buffer.h"
 
@@ -220,33 +220,19 @@ START_TEST(test_req_reply_addr_ipv4)
 }
 END_TEST
 
-Suite *suite(void)
+int
+main(void)
 {
-    Suite *s  = suite_create("request");
-    TCase *tc = tcase_create("request");
-
-    tcase_add_test(tc, test_req_ipv4_connect);
-    tcase_add_test(tc, test_req_ipv6_connect);
-    tcase_add_test(tc, test_req_domain_connect);
-    tcase_add_test(tc, test_req_domain_split_feed);
-    tcase_add_test(tc, test_req_bad_version);
-    tcase_add_test(tc, test_req_bad_rsv);
-    tcase_add_test(tc, test_req_unsupported_atyp);
-    tcase_add_test(tc, test_req_reply_format);
-    tcase_add_test(tc, test_req_reply_format_ipv6);
-    tcase_add_test(tc, test_req_reply_addr_ipv4);
-    suite_add_tcase(s, tc);
-
-    return s;
-}
-
-int main(void)
-{
-    SRunner *sr = srunner_create(suite());
-    int      number_failed;
-
-    srunner_run_all(sr, CK_NORMAL);
-    number_failed = srunner_ntests_failed(sr);
-    srunner_free(sr);
-    return (number_failed == 0) ? EXIT_SUCCESS : EXIT_FAILURE;
+    int failures = 0;
+    failures += test_run_case(test_req_ipv4_connect, "test_req_ipv4_connect");
+    failures += test_run_case(test_req_ipv6_connect, "test_req_ipv6_connect");
+    failures += test_run_case(test_req_domain_connect, "test_req_domain_connect");
+    failures += test_run_case(test_req_domain_split_feed, "test_req_domain_split_feed");
+    failures += test_run_case(test_req_bad_version, "test_req_bad_version");
+    failures += test_run_case(test_req_bad_rsv, "test_req_bad_rsv");
+    failures += test_run_case(test_req_unsupported_atyp, "test_req_unsupported_atyp");
+    failures += test_run_case(test_req_reply_format, "test_req_reply_format");
+    failures += test_run_case(test_req_reply_format_ipv6, "test_req_reply_format_ipv6");
+    failures += test_run_case(test_req_reply_addr_ipv4, "test_req_reply_addr_ipv4");
+    return failures == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
 }

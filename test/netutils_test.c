@@ -1,7 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/socket.h>
-#include <check.h>
+#include "test_assert.h"
 
 #include "netutils.h"
 
@@ -112,37 +112,14 @@ START_TEST(test_sockaddr_get_addr_port_rejects_unknown_family)
 }
 END_TEST
 
-Suite * 
-hello_suite(void) {
-    Suite *s;
-    TCase *tc;
-
-    s = suite_create("socks");
-
-    /* Core test case */
-    tc = tcase_create("netutils");
-
-    tcase_add_test(tc, test_sockaddr_to_human_ipv4);
-    tcase_add_test(tc, test_sockaddr_to_human_ipv6);
-    tcase_add_test(tc, test_sockaddr_get_addr_port_ipv4);
-    tcase_add_test(tc, test_sockaddr_get_addr_port_ipv6);
-    tcase_add_test(tc, test_sockaddr_get_addr_port_rejects_unknown_family);
-    suite_add_tcase(s, tc);
-
-    return s;
-}
-
-int 
-main(void) {
-    int number_failed;
-    Suite *s;
-    SRunner *sr;
-
-    s = hello_suite();
-    sr = srunner_create(s);
-
-    srunner_run_all(sr, CK_NORMAL);
-    number_failed = srunner_ntests_failed(sr);
-    srunner_free(sr);
-    return (number_failed == 0) ? EXIT_SUCCESS : EXIT_FAILURE;
+int
+main(void)
+{
+    int failures = 0;
+    failures += test_run_case(test_sockaddr_to_human_ipv4, "test_sockaddr_to_human_ipv4");
+    failures += test_run_case(test_sockaddr_to_human_ipv6, "test_sockaddr_to_human_ipv6");
+    failures += test_run_case(test_sockaddr_get_addr_port_ipv4, "test_sockaddr_get_addr_port_ipv4");
+    failures += test_run_case(test_sockaddr_get_addr_port_ipv6, "test_sockaddr_get_addr_port_ipv6");
+    failures += test_run_case(test_sockaddr_get_addr_port_rejects_unknown_family, "test_sockaddr_get_addr_port_rejects_unknown_family");
+    return failures == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
 }

@@ -1,7 +1,7 @@
 #include <fcntl.h>
 #include <stdlib.h>
 #include <unistd.h>
-#include <check.h>
+#include "test_assert.h"
 
 #define INITIAL_SIZE ((size_t) 1024)
 
@@ -154,28 +154,14 @@ START_TEST (test_selector_register_unregister_register) {
 }
 END_TEST
 
-Suite *
-suite(void) {
-    Suite *s  = suite_create("nio");
-    TCase *tc = tcase_create("nio");
-
-    tcase_add_test(tc, test_next_capacity);
-    tcase_add_test(tc, test_selector_error);
-    tcase_add_test(tc, test_ensure_capacity);
-    tcase_add_test(tc, test_selector_register_fd);
-    tcase_add_test(tc, test_selector_register_unregister_register);
-    suite_add_tcase(s, tc);
-
-    return s;
-}
-
-int 
-main(void) {
-    int number_failed;
-    SRunner *sr = srunner_create(suite());
-
-    srunner_run_all(sr, CK_NORMAL);
-    number_failed = srunner_ntests_failed(sr);
-    srunner_free(sr);
-    return (number_failed == 0) ? EXIT_SUCCESS : EXIT_FAILURE;
+int
+main(void)
+{
+    int failures = 0;
+    failures += test_run_case(test_selector_error, "test_selector_error");
+    failures += test_run_case(test_next_capacity, "test_next_capacity");
+    failures += test_run_case(test_ensure_capacity, "test_ensure_capacity");
+    failures += test_run_case(test_selector_register_fd, "test_selector_register_fd");
+    failures += test_run_case(test_selector_register_unregister_register, "test_selector_register_unregister_register");
+    return failures == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
 }

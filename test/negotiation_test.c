@@ -1,7 +1,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include <check.h>
+#include "test_assert.h"
 
 #include "buffer.h"
 
@@ -208,32 +208,18 @@ START_TEST(test_neg_reply_no_users_rejects_userpass)
 }
 END_TEST
 
-Suite *suite(void)
+int
+main(void)
 {
-    Suite *s  = suite_create("negotiation");
-    TCase *tc = tcase_create("negotiation");
-
-    tcase_add_test(tc, test_neg_noauth_happy);
-    tcase_add_test(tc, test_neg_userpass_happy);
-    tcase_add_test(tc, test_neg_wrong_version);
-    tcase_add_test(tc, test_neg_split_feed);
-    tcase_add_test(tc, test_neg_reply_prefers_userpass);
-    tcase_add_test(tc, test_neg_reply_falls_back_to_noauth);
-    tcase_add_test(tc, test_neg_reply_no_acceptable_methods);
-    tcase_add_test(tc, test_neg_reply_requires_auth_rejects_noauth);
-    tcase_add_test(tc, test_neg_reply_no_users_rejects_userpass);
-    suite_add_tcase(s, tc);
-
-    return s;
-}
-
-int main(void)
-{
-    SRunner *sr = srunner_create(suite());
-    int      number_failed;
-
-    srunner_run_all(sr, CK_NORMAL);
-    number_failed = srunner_ntests_failed(sr);
-    srunner_free(sr);
-    return (number_failed == 0) ? EXIT_SUCCESS : EXIT_FAILURE;
+    int failures = 0;
+    failures += test_run_case(test_neg_noauth_happy, "test_neg_noauth_happy");
+    failures += test_run_case(test_neg_userpass_happy, "test_neg_userpass_happy");
+    failures += test_run_case(test_neg_wrong_version, "test_neg_wrong_version");
+    failures += test_run_case(test_neg_split_feed, "test_neg_split_feed");
+    failures += test_run_case(test_neg_reply_prefers_userpass, "test_neg_reply_prefers_userpass");
+    failures += test_run_case(test_neg_reply_falls_back_to_noauth, "test_neg_reply_falls_back_to_noauth");
+    failures += test_run_case(test_neg_reply_no_acceptable_methods, "test_neg_reply_no_acceptable_methods");
+    failures += test_run_case(test_neg_reply_requires_auth_rejects_noauth, "test_neg_reply_requires_auth_rejects_noauth");
+    failures += test_run_case(test_neg_reply_no_users_rejects_userpass, "test_neg_reply_no_users_rejects_userpass");
+    return failures == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
 }

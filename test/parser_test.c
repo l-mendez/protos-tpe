@@ -1,6 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
-#include <check.h>
+#include "test_assert.h"
 
 #include "parser.h"
 
@@ -82,34 +82,10 @@ START_TEST (test_basic) {
 }
 END_TEST
 
-Suite *
-suite(void) {
-    Suite *s;
-    TCase *tc;
-
-    s = suite_create("parser_utils");
-
-    /* Core test case */
-    tc = tcase_create("parser_utils");
-
-    tcase_add_test(tc, test_basic);
-    suite_add_tcase(s, tc);
-
-    return s;
-}
-
 int
-main(void) {
-    int number_failed;
-    Suite *s;
-    SRunner *sr;
-
-    s = suite();
-    sr = srunner_create(s);
-
-    srunner_run_all(sr, CK_NORMAL);
-    number_failed = srunner_ntests_failed(sr);
-    srunner_free(sr);
-    return (number_failed == 0) ? EXIT_SUCCESS : EXIT_FAILURE;
+main(void)
+{
+    int failures = 0;
+    failures += test_run_case(test_basic, "test_basic");
+    return failures == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
 }
-

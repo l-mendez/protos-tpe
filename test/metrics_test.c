@@ -1,6 +1,6 @@
 #include <stdlib.h>
 
-#include <check.h>
+#include "test_assert.h"
 
 /* metrics vive en src/server, fuera del archivo compartido contra el que linkean
  * los tests, así que se incluye la unidad directamente (mismo enfoque que
@@ -83,27 +83,13 @@ START_TEST(test_metrics_bytes)
 }
 END_TEST
 
-Suite *suite(void)
+int
+main(void)
 {
-    Suite *s  = suite_create("metrics");
-    TCase *tc = tcase_create("metrics");
-
-    tcase_add_test(tc, test_metrics_initial);
-    tcase_add_test(tc, test_metrics_connections_and_peak);
-    tcase_add_test(tc, test_metrics_close_never_underflows);
-    tcase_add_test(tc, test_metrics_bytes);
-    suite_add_tcase(s, tc);
-
-    return s;
-}
-
-int main(void)
-{
-    SRunner *sr = srunner_create(suite());
-    int      number_failed;
-
-    srunner_run_all(sr, CK_NORMAL);
-    number_failed = srunner_ntests_failed(sr);
-    srunner_free(sr);
-    return (number_failed == 0) ? EXIT_SUCCESS : EXIT_FAILURE;
+    int failures = 0;
+    failures += test_run_case(test_metrics_initial, "test_metrics_initial");
+    failures += test_run_case(test_metrics_connections_and_peak, "test_metrics_connections_and_peak");
+    failures += test_run_case(test_metrics_close_never_underflows, "test_metrics_close_never_underflows");
+    failures += test_run_case(test_metrics_bytes, "test_metrics_bytes");
+    return failures == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
 }

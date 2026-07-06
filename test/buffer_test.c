@@ -1,5 +1,5 @@
 #include <stdlib.h>
-#include <check.h>
+#include "test_assert.h"
 
 // asi se puede probar las funciones internas
 #include "buffer.c"
@@ -93,24 +93,10 @@ START_TEST (test_buffer_misc) {
 }
 END_TEST
 
-Suite *
-suite(void) {
-    Suite *s   = suite_create("buffer");
-    TCase *tc  = tcase_create("buffer");
-
-    tcase_add_test(tc, test_buffer_misc);
-    suite_add_tcase(s, tc);
-
-    return s;
-}
-
 int
-main(void) {
-    SRunner *sr  = srunner_create(suite());
-    int number_failed;
-
-    srunner_run_all(sr, CK_NORMAL);
-    number_failed = srunner_ntests_failed(sr);
-    srunner_free(sr);
-    return (number_failed == 0) ? EXIT_SUCCESS : EXIT_FAILURE;
+main(void)
+{
+    int failures = 0;
+    failures += test_run_case(test_buffer_misc, "test_buffer_misc");
+    return failures == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
 }

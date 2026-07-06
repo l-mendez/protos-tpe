@@ -8,7 +8,7 @@
 #include <sys/time.h>
 #include <unistd.h>
 
-#include <check.h>
+#include "test_assert.h"
 
 #include "selector.h"
 
@@ -19,6 +19,7 @@
 #include "../src/server/negotiation.c"
 #include "../src/server/request.c"
 #include "../src/server/auth.c"
+#include "../src/server/metrics.c"
 #include "../src/server/socks5.c"
 
 static fd_selector           test_selector;
@@ -1560,50 +1561,39 @@ END_TEST
 
 /* ======================================================== suite ========= */
 
-static Suite *socks5_suite(void)
+int
+main(void)
 {
-    Suite *s  = suite_create("socks5");
-    TCase *tc = tcase_create("stm");
-    tcase_set_timeout(tc, 10);
-    tcase_add_test(tc, test_socks5_negotiation_then_connect);
-    tcase_add_test(tc, test_socks5_bad_version_closes);
-    tcase_add_test(tc, test_socks5_userpass_valid_advances);
-    tcase_add_test(tc, test_socks5_userpass_invalid_rejected);
-    tcase_add_test(tc, test_socks5_pipelined_request);
-    tcase_add_test(tc, test_socks5_no_acceptable_method_closes);
-    tcase_add_test(tc, test_socks5_auth_required_rejects_noauth);
-    tcase_add_test(tc, test_socks5_request_error_replies);
-    tcase_add_test(tc, test_socks5_non_connect_rejected);
-    tcase_add_test(tc, test_socks5_relay_echo);
-    tcase_add_test(tc, test_socks5_ipv6_connect_reply_uses_ipv6_atyp);
-    tcase_add_test(tc, test_socks5_relay_propagates_client_half_close);
-    tcase_add_test(tc, test_socks5_connect_refused);
-    tcase_add_test(tc, test_socks5_fqdn_resolution_failure_is_general_failure);
-    tcase_add_test(tc, test_socks5_fqdn_connect_and_relay);
-    tcase_add_test(tc, test_socks5_reap_idle_connection);
-    tcase_add_test(tc, test_socks5_reap_keeps_relay_before_relay_timeout);
-    tcase_add_test(tc, test_socks5_reap_closes_idle_relay_after_relay_timeout);
-    tcase_add_test(tc, test_socks5_reap_req_connecting_sends_failure_reply);
-    tcase_add_test(tc, test_socks5_reap_req_resolve_timeout_sends_failure_reply);
-    tcase_add_test(tc, test_socks5_reap_req_resolve_timeout_releases_pending_job);
-    tcase_add_test(tc, test_socks5_reap_completed_resolve_without_notification);
-    tcase_add_test(tc, test_socks5_reap_completed_resolve_refreshes_activity);
-    tcase_add_test(tc, test_socks5_reap_req_write_with_origin_fd);
-    tcase_add_test(tc, test_socks5_relay_compacts_partial_drain_before_interest_update);
-    tcase_add_test(tc, test_socks5_resolver_pool_rejects_when_capacity_is_exhausted);
-    tcase_add_test(tc, test_socks5_rejects_domain_with_embedded_nul);
-    tcase_add_test(tc, test_socks5_close_cancels_pending_resolver_reference);
-    tcase_add_test(tc, test_socks5_resolver_job_captures_notify_target);
-    tcase_add_test(tc, test_socks5_relay_init_arming_failure_tears_down);
-    suite_add_tcase(s, tc);
-    return s;
-}
-
-int main(void)
-{
-    SRunner *sr = srunner_create(socks5_suite());
-    srunner_run_all(sr, CK_NORMAL);
-    int failed = srunner_ntests_failed(sr);
-    srunner_free(sr);
-    return failed == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
+    int failures = 0;
+    failures += test_run_case(test_socks5_negotiation_then_connect, "test_socks5_negotiation_then_connect");
+    failures += test_run_case(test_socks5_bad_version_closes, "test_socks5_bad_version_closes");
+    failures += test_run_case(test_socks5_userpass_valid_advances, "test_socks5_userpass_valid_advances");
+    failures += test_run_case(test_socks5_userpass_invalid_rejected, "test_socks5_userpass_invalid_rejected");
+    failures += test_run_case(test_socks5_pipelined_request, "test_socks5_pipelined_request");
+    failures += test_run_case(test_socks5_no_acceptable_method_closes, "test_socks5_no_acceptable_method_closes");
+    failures += test_run_case(test_socks5_auth_required_rejects_noauth, "test_socks5_auth_required_rejects_noauth");
+    failures += test_run_case(test_socks5_request_error_replies, "test_socks5_request_error_replies");
+    failures += test_run_case(test_socks5_non_connect_rejected, "test_socks5_non_connect_rejected");
+    failures += test_run_case(test_socks5_relay_echo, "test_socks5_relay_echo");
+    failures += test_run_case(test_socks5_ipv6_connect_reply_uses_ipv6_atyp, "test_socks5_ipv6_connect_reply_uses_ipv6_atyp");
+    failures += test_run_case(test_socks5_relay_propagates_client_half_close, "test_socks5_relay_propagates_client_half_close");
+    failures += test_run_case(test_socks5_connect_refused, "test_socks5_connect_refused");
+    failures += test_run_case(test_socks5_fqdn_resolution_failure_is_general_failure, "test_socks5_fqdn_resolution_failure_is_general_failure");
+    failures += test_run_case(test_socks5_fqdn_connect_and_relay, "test_socks5_fqdn_connect_and_relay");
+    failures += test_run_case(test_socks5_reap_idle_connection, "test_socks5_reap_idle_connection");
+    failures += test_run_case(test_socks5_reap_keeps_relay_before_relay_timeout, "test_socks5_reap_keeps_relay_before_relay_timeout");
+    failures += test_run_case(test_socks5_reap_closes_idle_relay_after_relay_timeout, "test_socks5_reap_closes_idle_relay_after_relay_timeout");
+    failures += test_run_case(test_socks5_reap_req_connecting_sends_failure_reply, "test_socks5_reap_req_connecting_sends_failure_reply");
+    failures += test_run_case(test_socks5_reap_req_resolve_timeout_sends_failure_reply, "test_socks5_reap_req_resolve_timeout_sends_failure_reply");
+    failures += test_run_case(test_socks5_reap_req_resolve_timeout_releases_pending_job, "test_socks5_reap_req_resolve_timeout_releases_pending_job");
+    failures += test_run_case(test_socks5_reap_completed_resolve_without_notification, "test_socks5_reap_completed_resolve_without_notification");
+    failures += test_run_case(test_socks5_reap_completed_resolve_refreshes_activity, "test_socks5_reap_completed_resolve_refreshes_activity");
+    failures += test_run_case(test_socks5_reap_req_write_with_origin_fd, "test_socks5_reap_req_write_with_origin_fd");
+    failures += test_run_case(test_socks5_relay_compacts_partial_drain_before_interest_update, "test_socks5_relay_compacts_partial_drain_before_interest_update");
+    failures += test_run_case(test_socks5_resolver_pool_rejects_when_capacity_is_exhausted, "test_socks5_resolver_pool_rejects_when_capacity_is_exhausted");
+    failures += test_run_case(test_socks5_rejects_domain_with_embedded_nul, "test_socks5_rejects_domain_with_embedded_nul");
+    failures += test_run_case(test_socks5_close_cancels_pending_resolver_reference, "test_socks5_close_cancels_pending_resolver_reference");
+    failures += test_run_case(test_socks5_resolver_job_captures_notify_target, "test_socks5_resolver_job_captures_notify_target");
+    failures += test_run_case(test_socks5_relay_init_arming_failure_tears_down, "test_socks5_relay_init_arming_failure_tears_down");
+    return failures == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
 }

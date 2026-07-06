@@ -1,7 +1,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include <check.h>
+#include "test_assert.h"
 
 #include "buffer.h"
 
@@ -151,29 +151,15 @@ START_TEST(test_auth_reply_format)
 }
 END_TEST
 
-Suite *suite(void)
+int
+main(void)
 {
-    Suite *s  = suite_create("auth");
-    TCase *tc = tcase_create("auth");
-
-    tcase_add_test(tc, test_auth_happy);
-    tcase_add_test(tc, test_auth_wrong_version);
-    tcase_add_test(tc, test_auth_empty_fields);
-    tcase_add_test(tc, test_auth_split_feed);
-    tcase_add_test(tc, test_auth_max_lengths);
-    tcase_add_test(tc, test_auth_reply_format);
-    suite_add_tcase(s, tc);
-
-    return s;
-}
-
-int main(void)
-{
-    SRunner *sr = srunner_create(suite());
-    int      number_failed;
-
-    srunner_run_all(sr, CK_NORMAL);
-    number_failed = srunner_ntests_failed(sr);
-    srunner_free(sr);
-    return (number_failed == 0) ? EXIT_SUCCESS : EXIT_FAILURE;
+    int failures = 0;
+    failures += test_run_case(test_auth_happy, "test_auth_happy");
+    failures += test_run_case(test_auth_wrong_version, "test_auth_wrong_version");
+    failures += test_run_case(test_auth_empty_fields, "test_auth_empty_fields");
+    failures += test_run_case(test_auth_split_feed, "test_auth_split_feed");
+    failures += test_run_case(test_auth_max_lengths, "test_auth_max_lengths");
+    failures += test_run_case(test_auth_reply_format, "test_auth_reply_format");
+    return failures == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
 }
