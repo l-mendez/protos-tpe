@@ -1,7 +1,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "test_assert.h"
+#include <check.h>
 
 #include "buffer.h"
 
@@ -17,14 +17,13 @@ static auth_state feed_bytes(struct socks5_auth *p, buffer *b, const uint8_t *by
 {
     size_t   space;
     uint8_t *ptr = buffer_write_ptr(b, &space);
-    assert_uint_ge(space, len);
+    ck_assert_uint_ge(space, len);
     memcpy(ptr, bytes, len);
     buffer_write_adv(b, len);
     return auth_parser_feed(p, b);
 }
 
-static void
-test_auth_happy(void)
+START_TEST(test_auth_happy)
 {
     struct socks5_auth p;
     auth_parser_init(&p);
@@ -37,16 +36,16 @@ test_auth_happy(void)
     uint8_t msg[] = {0x01, 0x04, 'a', 'l', 'a', 'n', 0x03, 'p', 'w', 'd'};
     auth_state st = feed_bytes(&p, &buf, msg, N(msg));
 
-    assert_int_eq(AUTH_DONE, st);
-    assert(auth_done(&p));
-    assert_uint_eq(4, p.ulen);
-    assert_str_eq("alan", (char *)p.uname);
-    assert_uint_eq(3, p.plen);
-    assert_str_eq("pwd", (char *)p.passwd);
+    ck_assert_int_eq(AUTH_DONE, st);
+    ck_assert(auth_done(&p));
+    ck_assert_uint_eq(4, p.ulen);
+    ck_assert_str_eq("alan", (char *)p.uname);
+    ck_assert_uint_eq(3, p.plen);
+    ck_assert_str_eq("pwd", (char *)p.passwd);
 }
+END_TEST
 
-static void
-test_auth_wrong_version(void)
+START_TEST(test_auth_wrong_version)
 {
     struct socks5_auth p;
     auth_parser_init(&p);
@@ -58,12 +57,12 @@ test_auth_wrong_version(void)
     uint8_t msg[] = {0x05, 0x01, 'a', 0x01, 'b'}; /* VER=5 -> invalid (auth is 0x01) */
     auth_state st = feed_bytes(&p, &buf, msg, N(msg));
 
-    assert_int_eq(AUTH_ERROR, st);
+    ck_assert_int_eq(AUTH_ERROR, st);
 }
+END_TEST
 
 /* RFC 1929 allows ULEN/PLEN of 0; the parser must skip the empty field. */
-static void
-test_auth_empty_fields(void)
+START_TEST(test_auth_empty_fields)
 {
     struct socks5_auth p;
     auth_parser_init(&p);
@@ -75,17 +74,17 @@ test_auth_empty_fields(void)
     uint8_t msg[] = {0x01, 0x00, 0x00}; /* empty username, empty password */
     auth_state st = feed_bytes(&p, &buf, msg, N(msg));
 
-    assert_int_eq(AUTH_DONE, st);
-    assert_uint_eq(0, p.ulen);
-    assert_str_eq("", (char *)p.uname);
-    assert_uint_eq(0, p.plen);
-    assert_str_eq("", (char *)p.passwd);
+    ck_assert_int_eq(AUTH_DONE, st);
+    ck_assert_uint_eq(0, p.ulen);
+    ck_assert_str_eq("", (char *)p.uname);
+    ck_assert_uint_eq(0, p.plen);
+    ck_assert_str_eq("", (char *)p.passwd);
 }
+END_TEST
 
 /* Partial reads: the same message delivered one byte per feed must parse
  * identically. This is the core "manejar lecturas parciales" requirement. */
-static void
-test_auth_split_feed(void)
+START_TEST(test_auth_split_feed)
 {
     struct socks5_auth p;
     auth_parser_init(&p);
@@ -99,17 +98,17 @@ test_auth_split_feed(void)
     for (size_t i = 0; i < N(msg); i++) {
         st = feed_bytes(&p, &buf, &msg[i], 1);
         if (i < N(msg) - 1) {
-            assert_int_ne(AUTH_DONE, st);
-            assert_int_ne(AUTH_ERROR, st);
+            ck_assert_int_ne(AUTH_DONE, st);
+            ck_assert_int_ne(AUTH_ERROR, st);
         }
     }
-    assert_int_eq(AUTH_DONE, st);
-    assert_str_eq("alan", (char *)p.uname);
-    assert_str_eq("pwd", (char *)p.passwd);
+    ck_assert_int_eq(AUTH_DONE, st);
+    ck_assert_str_eq("alan", (char *)p.uname);
+    ck_assert_str_eq("pwd", (char *)p.passwd);
 }
+END_TEST
 
-static void
-test_auth_max_lengths(void)
+START_TEST(test_auth_max_lengths)
 {
     struct socks5_auth p;
     auth_parser_init(&p);
@@ -127,39 +126,54 @@ test_auth_max_lengths(void)
     for (int k = 0; k < 255; k++) msg[i++] = 'p';
 
     auth_state st = feed_bytes(&p, &buf, msg, i);
-    assert_int_eq(AUTH_DONE, st);
-    assert_uint_eq(255, p.ulen);
-    assert_uint_eq(255, p.plen);
-    assert_uint_eq('\0', p.uname[255]);
-    assert_uint_eq('\0', p.passwd[255]);
+    ck_assert_int_eq(AUTH_DONE, st);
+    ck_assert_uint_eq(255, p.ulen);
+    ck_assert_uint_eq(255, p.plen);
+    ck_assert_uint_eq('\0', p.uname[255]);
+    ck_assert_uint_eq('\0', p.passwd[255]);
 }
+END_TEST
 
-static void
-test_auth_reply_format(void)
+START_TEST(test_auth_reply_format)
 {
     uint8_t outraw[8];
     buffer  out;
     buffer_init(&out, N(outraw), outraw);
 
     fill_auth_reply(&out, SOCKS5_AUTH_OK);
-    assert_uint_eq(0x01, buffer_read(&out)); /* VER del subprotocolo de auth */
-    assert_uint_eq(0x00, buffer_read(&out)); /* STATUS = success */
+    ck_assert_uint_eq(0x01, buffer_read(&out)); /* VER del subprotocolo de auth */
+    ck_assert_uint_eq(0x00, buffer_read(&out)); /* STATUS = success */
 
     buffer_reset(&out);
     fill_auth_reply(&out, SOCKS5_AUTH_FAIL);
-    assert_uint_eq(0x01, buffer_read(&out));
-    assert_uint_eq(0x01, buffer_read(&out));
+    ck_assert_uint_eq(0x01, buffer_read(&out));
+    ck_assert_uint_eq(0x01, buffer_read(&out));
+}
+END_TEST
+
+Suite *suite(void)
+{
+    Suite *s  = suite_create("auth");
+    TCase *tc = tcase_create("auth");
+
+    tcase_add_test(tc, test_auth_happy);
+    tcase_add_test(tc, test_auth_wrong_version);
+    tcase_add_test(tc, test_auth_empty_fields);
+    tcase_add_test(tc, test_auth_split_feed);
+    tcase_add_test(tc, test_auth_max_lengths);
+    tcase_add_test(tc, test_auth_reply_format);
+    suite_add_tcase(s, tc);
+
+    return s;
 }
 
-int
-main(void)
+int main(void)
 {
-    int failures = 0;
-    failures += test_run_case(test_auth_happy, "test_auth_happy");
-    failures += test_run_case(test_auth_wrong_version, "test_auth_wrong_version");
-    failures += test_run_case(test_auth_empty_fields, "test_auth_empty_fields");
-    failures += test_run_case(test_auth_split_feed, "test_auth_split_feed");
-    failures += test_run_case(test_auth_max_lengths, "test_auth_max_lengths");
-    failures += test_run_case(test_auth_reply_format, "test_auth_reply_format");
-    return failures == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
+    SRunner *sr = srunner_create(suite());
+    int      number_failed;
+
+    srunner_run_all(sr, CK_NORMAL);
+    number_failed = srunner_ntests_failed(sr);
+    srunner_free(sr);
+    return (number_failed == 0) ? EXIT_SUCCESS : EXIT_FAILURE;
 }

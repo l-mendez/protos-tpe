@@ -1,6 +1,6 @@
 #include <stdlib.h>
 #include <stdbool.h>
-#include "test_assert.h"
+#include <check.h>
 #include "selector.h"
 #include "stm.h"
 
@@ -70,9 +70,7 @@ static const struct state_definition statbl[] = {
 
 //static bool init = false;
 
-static void
-test_buffer_misc(void)
-{
+START_TEST (test_buffer_misc) {
     struct state_machine stm = {
         .initial   = A,
         .max_state = C,
@@ -85,46 +83,61 @@ test_buffer_misc(void)
         .data = &data,
     };
     stm_init(&stm);
-    assert_uint_eq(A, stm_state(&stm));
-    assert_uint_eq(false,  data.arrived[A]);
-    assert_uint_eq(false,  data.arrived[B]);
-    assert_uint_eq(false,  data.arrived[C]);
-    assert_ptr_null(stm.current);
+    ck_assert_uint_eq(A, stm_state(&stm));
+    ck_assert_uint_eq(false,  data.arrived[A]);
+    ck_assert_uint_eq(false,  data.arrived[B]);
+    ck_assert_uint_eq(false,  data.arrived[C]);
+    ck_assert_ptr_null(stm.current);
 
     stm_handler_read(&stm, &key);
-    assert_uint_eq(B,     stm_state(&stm));
-    assert_uint_eq(true,  data.arrived[A]);
-    assert_uint_eq(true,  data.arrived[B]);
-    assert_uint_eq(false, data.arrived[C]);
-    assert_uint_eq(true,  data.departed[A]);
-    assert_uint_eq(false, data.departed[B]);
-    assert_uint_eq(false, data.departed[C]);
+    ck_assert_uint_eq(B,     stm_state(&stm));
+    ck_assert_uint_eq(true,  data.arrived[A]);
+    ck_assert_uint_eq(true,  data.arrived[B]);
+    ck_assert_uint_eq(false, data.arrived[C]);
+    ck_assert_uint_eq(true,  data.departed[A]);
+    ck_assert_uint_eq(false, data.departed[B]);
+    ck_assert_uint_eq(false, data.departed[C]);
 
     stm_handler_write(&stm, &key);
-    assert_uint_eq(C,     stm_state(&stm));
-    assert_uint_eq(true,  data.arrived[A]);
-    assert_uint_eq(true,  data.arrived[B]);
-    assert_uint_eq(true,  data.arrived[C]);
-    assert_uint_eq(true,  data.departed[A]);
-    assert_uint_eq(true,  data.departed[B]);
-    assert_uint_eq(false, data.departed[C]);
+    ck_assert_uint_eq(C,     stm_state(&stm));
+    ck_assert_uint_eq(true,  data.arrived[A]);
+    ck_assert_uint_eq(true,  data.arrived[B]);
+    ck_assert_uint_eq(true,  data.arrived[C]);
+    ck_assert_uint_eq(true,  data.departed[A]);
+    ck_assert_uint_eq(true,  data.departed[B]);
+    ck_assert_uint_eq(false, data.departed[C]);
 
     stm_handler_read(&stm, &key);
-    assert_uint_eq(C,     stm_state(&stm));
-    assert_uint_eq(true,  data.arrived[A]);
-    assert_uint_eq(true,  data.arrived[B]);
-    assert_uint_eq(true,  data.arrived[C]);
-    assert_uint_eq(true,  data.departed[A]);
-    assert_uint_eq(true,  data.departed[B]);
-    assert_uint_eq(false, data.departed[C]);
+    ck_assert_uint_eq(C,     stm_state(&stm));
+    ck_assert_uint_eq(true,  data.arrived[A]);
+    ck_assert_uint_eq(true,  data.arrived[B]);
+    ck_assert_uint_eq(true,  data.arrived[C]);
+    ck_assert_uint_eq(true,  data.departed[A]);
+    ck_assert_uint_eq(true,  data.departed[B]);
+    ck_assert_uint_eq(false, data.departed[C]);
 
     stm_handler_close(&stm, &key);
 }
+END_TEST
+
+Suite *
+suite(void) {
+    Suite *s   = suite_create("nio_stm");
+    TCase *tc  = tcase_create("nio_stm");
+
+    tcase_add_test(tc, test_buffer_misc);
+    suite_add_tcase(s, tc);
+
+    return s;
+}
 
 int
-main(void)
-{
-    int failures = 0;
-    failures += test_run_case(test_buffer_misc, "test_buffer_misc");
-    return failures == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
+main(void) {
+    SRunner *sr  = srunner_create(suite());
+    int number_failed;
+
+    srunner_run_all(sr, CK_NORMAL);
+    number_failed = srunner_ntests_failed(sr);
+    srunner_free(sr);
+    return (number_failed == 0) ? EXIT_SUCCESS : EXIT_FAILURE;
 }

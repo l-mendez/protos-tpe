@@ -1,7 +1,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "test_assert.h"
+#include <check.h>
 
 #include "buffer.h"
 
@@ -17,14 +17,13 @@ static neg_state feed_bytes(struct negotiation_parser *p, buffer *b, const uint8
 {
     size_t   space;
     uint8_t *ptr = buffer_write_ptr(b, &space);
-    assert_uint_ge(space, len);
+    ck_assert_uint_ge(space, len);
     memcpy(ptr, bytes, len);
     buffer_write_adv(b, len);
     return negotiation_parser_feed(p, b);
 }
 
-static void
-test_neg_noauth_happy(void)
+START_TEST(test_neg_noauth_happy)
 {
     struct negotiation_parser p;
     negotiation_parser_init(&p);
@@ -36,14 +35,14 @@ test_neg_noauth_happy(void)
     uint8_t msg[] = {0x05, 0x01, 0x00}; /* VER=5, NMETHODS=1, no-auth */
     neg_state st = feed_bytes(&p, &buf, msg, N(msg));
 
-    assert_int_eq(NEG_DONE, st);
-    assert(negotiation_done(&p));
-    assert(p.has_noauth);
-    assert(!p.has_userpass);
+    ck_assert_int_eq(NEG_DONE, st);
+    ck_assert(negotiation_done(&p));
+    ck_assert(p.has_noauth);
+    ck_assert(!p.has_userpass);
 }
+END_TEST
 
-static void
-test_neg_userpass_happy(void)
+START_TEST(test_neg_userpass_happy)
 {
     struct negotiation_parser p;
     negotiation_parser_init(&p);
@@ -55,13 +54,13 @@ test_neg_userpass_happy(void)
     uint8_t msg[] = {0x05, 0x02, 0x00, 0x02}; /* offers no-auth AND user/pass */
     neg_state st = feed_bytes(&p, &buf, msg, N(msg));
 
-    assert_int_eq(NEG_DONE, st);
-    assert(p.has_noauth);
-    assert(p.has_userpass);
+    ck_assert_int_eq(NEG_DONE, st);
+    ck_assert(p.has_noauth);
+    ck_assert(p.has_userpass);
 }
+END_TEST
 
-static void
-test_neg_wrong_version(void)
+START_TEST(test_neg_wrong_version)
 {
     struct negotiation_parser p;
     negotiation_parser_init(&p);
@@ -73,13 +72,13 @@ test_neg_wrong_version(void)
     uint8_t msg[] = {0x04, 0x01, 0x00}; /* VER=4 -> invalid */
     neg_state st = feed_bytes(&p, &buf, msg, N(msg));
 
-    assert_int_eq(NEG_INVALID, st);
+    ck_assert_int_eq(NEG_INVALID, st);
 }
+END_TEST
 
 /* Partial reads: the same message delivered one byte per feed must parse
  * identically. This is the core "manejar lecturas parciales" requirement. */
-static void
-test_neg_split_feed(void)
+START_TEST(test_neg_split_feed)
 {
     struct negotiation_parser p;
     negotiation_parser_init(&p);
@@ -93,16 +92,16 @@ test_neg_split_feed(void)
     for (size_t i = 0; i < N(msg); i++) {
         st = feed_bytes(&p, &buf, &msg[i], 1);
         if (i < N(msg) - 1) {
-            assert_int_ne(NEG_DONE, st);
-            assert_int_ne(NEG_INVALID, st);
+            ck_assert_int_ne(NEG_DONE, st);
+            ck_assert_int_ne(NEG_INVALID, st);
         }
     }
-    assert_int_eq(NEG_DONE, st);
-    assert(p.has_userpass);
+    ck_assert_int_eq(NEG_DONE, st);
+    ck_assert(p.has_userpass);
 }
+END_TEST
 
-static void
-test_neg_reply_prefers_userpass(void)
+START_TEST(test_neg_reply_prefers_userpass)
 {
     struct negotiation_parser p;
     negotiation_parser_init(&p);
@@ -118,13 +117,13 @@ test_neg_reply_prefers_userpass(void)
     /* auth obligatoria (hay usuarios) y se ofreció user/pass -> se elige 0x02. */
     uint8_t chosen = fill_negotiation_reply(&p, &out, true);
 
-    assert_uint_eq(0x02, chosen);
-    assert_uint_eq(0x05, buffer_read(&out));
-    assert_uint_eq(0x02, buffer_read(&out));
+    ck_assert_uint_eq(0x02, chosen);
+    ck_assert_uint_eq(0x05, buffer_read(&out));
+    ck_assert_uint_eq(0x02, buffer_read(&out));
 }
+END_TEST
 
-static void
-test_neg_reply_falls_back_to_noauth(void)
+START_TEST(test_neg_reply_falls_back_to_noauth)
 {
     struct negotiation_parser p;
     negotiation_parser_init(&p);
@@ -140,13 +139,13 @@ test_neg_reply_falls_back_to_noauth(void)
     /* sin usuarios configurados (auth no requerida) se acepta no-auth. */
     uint8_t chosen = fill_negotiation_reply(&p, &out, false);
 
-    assert_uint_eq(0x00, chosen);
-    assert_uint_eq(0x05, buffer_read(&out));
-    assert_uint_eq(0x00, buffer_read(&out));
+    ck_assert_uint_eq(0x00, chosen);
+    ck_assert_uint_eq(0x05, buffer_read(&out));
+    ck_assert_uint_eq(0x00, buffer_read(&out));
 }
+END_TEST
 
-static void
-test_neg_reply_no_acceptable_methods(void)
+START_TEST(test_neg_reply_no_acceptable_methods)
 {
     struct negotiation_parser p;
     negotiation_parser_init(&p);
@@ -161,15 +160,15 @@ test_neg_reply_no_acceptable_methods(void)
     buffer_init(&out, N(outraw), outraw);
     uint8_t chosen = fill_negotiation_reply(&p, &out, false);
 
-    assert_uint_eq(0xFF, chosen);
-    assert_uint_eq(0x05, buffer_read(&out));
-    assert_uint_eq(0xFF, buffer_read(&out));
+    ck_assert_uint_eq(0xFF, chosen);
+    ck_assert_uint_eq(0x05, buffer_read(&out));
+    ck_assert_uint_eq(0xFF, buffer_read(&out));
 }
+END_TEST
 
 /* Con usuarios configurados (auth obligatoria) un cliente que sólo ofrece
  * no-auth no puede saltear la autenticación: se rechaza con 0xFF. */
-static void
-test_neg_reply_requires_auth_rejects_noauth(void)
+START_TEST(test_neg_reply_requires_auth_rejects_noauth)
 {
     struct negotiation_parser p;
     negotiation_parser_init(&p);
@@ -184,13 +183,13 @@ test_neg_reply_requires_auth_rejects_noauth(void)
     buffer_init(&out, N(outraw), outraw);
     uint8_t chosen = fill_negotiation_reply(&p, &out, true);
 
-    assert_uint_eq(0xFF, chosen);
+    ck_assert_uint_eq(0xFF, chosen);
 }
+END_TEST
 
 /* Sin usuarios configurados, ofrecer sólo user/pass no tiene salida (nadie puede
  * autenticarse): se rechaza con 0xFF en vez de quedar colgado. */
-static void
-test_neg_reply_no_users_rejects_userpass(void)
+START_TEST(test_neg_reply_no_users_rejects_userpass)
 {
     struct negotiation_parser p;
     negotiation_parser_init(&p);
@@ -205,21 +204,36 @@ test_neg_reply_no_users_rejects_userpass(void)
     buffer_init(&out, N(outraw), outraw);
     uint8_t chosen = fill_negotiation_reply(&p, &out, false);
 
-    assert_uint_eq(0xFF, chosen);
+    ck_assert_uint_eq(0xFF, chosen);
+}
+END_TEST
+
+Suite *suite(void)
+{
+    Suite *s  = suite_create("negotiation");
+    TCase *tc = tcase_create("negotiation");
+
+    tcase_add_test(tc, test_neg_noauth_happy);
+    tcase_add_test(tc, test_neg_userpass_happy);
+    tcase_add_test(tc, test_neg_wrong_version);
+    tcase_add_test(tc, test_neg_split_feed);
+    tcase_add_test(tc, test_neg_reply_prefers_userpass);
+    tcase_add_test(tc, test_neg_reply_falls_back_to_noauth);
+    tcase_add_test(tc, test_neg_reply_no_acceptable_methods);
+    tcase_add_test(tc, test_neg_reply_requires_auth_rejects_noauth);
+    tcase_add_test(tc, test_neg_reply_no_users_rejects_userpass);
+    suite_add_tcase(s, tc);
+
+    return s;
 }
 
-int
-main(void)
+int main(void)
 {
-    int failures = 0;
-    failures += test_run_case(test_neg_noauth_happy, "test_neg_noauth_happy");
-    failures += test_run_case(test_neg_userpass_happy, "test_neg_userpass_happy");
-    failures += test_run_case(test_neg_wrong_version, "test_neg_wrong_version");
-    failures += test_run_case(test_neg_split_feed, "test_neg_split_feed");
-    failures += test_run_case(test_neg_reply_prefers_userpass, "test_neg_reply_prefers_userpass");
-    failures += test_run_case(test_neg_reply_falls_back_to_noauth, "test_neg_reply_falls_back_to_noauth");
-    failures += test_run_case(test_neg_reply_no_acceptable_methods, "test_neg_reply_no_acceptable_methods");
-    failures += test_run_case(test_neg_reply_requires_auth_rejects_noauth, "test_neg_reply_requires_auth_rejects_noauth");
-    failures += test_run_case(test_neg_reply_no_users_rejects_userpass, "test_neg_reply_no_users_rejects_userpass");
-    return failures == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
+    SRunner *sr = srunner_create(suite());
+    int      number_failed;
+
+    srunner_run_all(sr, CK_NORMAL);
+    number_failed = srunner_ntests_failed(sr);
+    srunner_free(sr);
+    return (number_failed == 0) ? EXIT_SUCCESS : EXIT_FAILURE;
 }

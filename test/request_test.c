@@ -2,7 +2,7 @@
 #include <string.h>
 #include <netinet/in.h>
 
-#include "test_assert.h"
+#include <check.h>
 
 #include "buffer.h"
 
@@ -16,14 +16,13 @@ static req_state feed_bytes(struct socks5_request *p, buffer *b, const uint8_t *
 {
     size_t   space;
     uint8_t *ptr = buffer_write_ptr(b, &space);
-    assert_uint_ge(space, len);
+    ck_assert_uint_ge(space, len);
     memcpy(ptr, bytes, len);
     buffer_write_adv(b, len);
     return request_parser_feed(p, b);
 }
 
-static void
-test_req_ipv4_connect(void)
+START_TEST(test_req_ipv4_connect)
 {
     struct socks5_request p;
     request_parser_init(&p);
@@ -36,18 +35,18 @@ test_req_ipv4_connect(void)
     uint8_t msg[] = {0x05, 0x01, 0x00, 0x01, 127, 0, 0, 1, 0x00, 0x50};
     req_state st = feed_bytes(&p, &buf, msg, N(msg));
 
-    assert_int_eq(REQ_DONE, st);
-    assert(request_done(&p));
-    assert_uint_eq(0x01, p.cmd);
-    assert_uint_eq(0x01, p.atyp);
-    assert_uint_eq(4, p.addr_len);
-    assert_uint_eq(127, p.dst_addr[0]);
-    assert_uint_eq(1, p.dst_addr[3]);
-    assert_uint_eq(80, p.dst_port);
+    ck_assert_int_eq(REQ_DONE, st);
+    ck_assert(request_done(&p));
+    ck_assert_uint_eq(0x01, p.cmd);
+    ck_assert_uint_eq(0x01, p.atyp);
+    ck_assert_uint_eq(4, p.addr_len);
+    ck_assert_uint_eq(127, p.dst_addr[0]);
+    ck_assert_uint_eq(1, p.dst_addr[3]);
+    ck_assert_uint_eq(80, p.dst_port);
 }
+END_TEST
 
-static void
-test_req_ipv6_connect(void)
+START_TEST(test_req_ipv6_connect)
 {
     struct socks5_request p;
     request_parser_init(&p);
@@ -62,15 +61,15 @@ test_req_ipv6_connect(void)
                      0x01, 0xBB};
     req_state st = feed_bytes(&p, &buf, msg, N(msg));
 
-    assert_int_eq(REQ_DONE, st);
-    assert_uint_eq(0x04, p.atyp);
-    assert_uint_eq(16, p.addr_len);
-    assert_uint_eq(1, p.dst_addr[15]);
-    assert_uint_eq(443, p.dst_port);
+    ck_assert_int_eq(REQ_DONE, st);
+    ck_assert_uint_eq(0x04, p.atyp);
+    ck_assert_uint_eq(16, p.addr_len);
+    ck_assert_uint_eq(1, p.dst_addr[15]);
+    ck_assert_uint_eq(443, p.dst_port);
 }
+END_TEST
 
-static void
-test_req_domain_connect(void)
+START_TEST(test_req_domain_connect)
 {
     struct socks5_request p;
     request_parser_init(&p);
@@ -85,17 +84,17 @@ test_req_domain_connect(void)
                      0x01, 0xBB};
     req_state st = feed_bytes(&p, &buf, msg, N(msg));
 
-    assert_int_eq(REQ_DONE, st);
-    assert_uint_eq(0x03, p.atyp);
-    assert_uint_eq(11, p.addr_len);
-    assert_int_eq(0, memcmp(p.dst_addr, "example.com", 11));
-    assert_uint_eq(443, p.dst_port);
+    ck_assert_int_eq(REQ_DONE, st);
+    ck_assert_uint_eq(0x03, p.atyp);
+    ck_assert_uint_eq(11, p.addr_len);
+    ck_assert_int_eq(0, memcmp(p.dst_addr, "example.com", 11));
+    ck_assert_uint_eq(443, p.dst_port);
 }
+END_TEST
 
 /* Partial reads: a domain request delivered one byte per feed (split between the
  * length byte and the name, and between the two port bytes) must parse the same. */
-static void
-test_req_domain_split_feed(void)
+START_TEST(test_req_domain_split_feed)
 {
     struct socks5_request p;
     request_parser_init(&p);
@@ -111,18 +110,18 @@ test_req_domain_split_feed(void)
     for (size_t i = 0; i < N(msg); i++) {
         st = feed_bytes(&p, &buf, &msg[i], 1);
         if (i < N(msg) - 1) {
-            assert_int_ne(REQ_DONE, st);
-            assert_int_ne(REQ_ERROR, st);
+            ck_assert_int_ne(REQ_DONE, st);
+            ck_assert_int_ne(REQ_ERROR, st);
         }
     }
-    assert_int_eq(REQ_DONE, st);
-    assert_uint_eq(0x03, p.atyp);
-    assert_int_eq(0, memcmp(p.dst_addr, "example.com", 11));
-    assert_uint_eq(443, p.dst_port);
+    ck_assert_int_eq(REQ_DONE, st);
+    ck_assert_uint_eq(0x03, p.atyp);
+    ck_assert_int_eq(0, memcmp(p.dst_addr, "example.com", 11));
+    ck_assert_uint_eq(443, p.dst_port);
 }
+END_TEST
 
-static void
-test_req_bad_version(void)
+START_TEST(test_req_bad_version)
 {
     struct socks5_request p;
     request_parser_init(&p);
@@ -130,11 +129,11 @@ test_req_bad_version(void)
     buffer  buf;
     buffer_init(&buf, N(raw), raw);
     uint8_t msg[] = {0x04, 0x01, 0x00, 0x01};
-    assert_int_eq(REQ_ERROR, feed_bytes(&p, &buf, msg, N(msg)));
+    ck_assert_int_eq(REQ_ERROR, feed_bytes(&p, &buf, msg, N(msg)));
 }
+END_TEST
 
-static void
-test_req_bad_rsv(void)
+START_TEST(test_req_bad_rsv)
 {
     struct socks5_request p;
     request_parser_init(&p);
@@ -142,11 +141,11 @@ test_req_bad_rsv(void)
     buffer  buf;
     buffer_init(&buf, N(raw), raw);
     uint8_t msg[] = {0x05, 0x01, 0xFF, 0x01}; /* RSV must be 0x00 */
-    assert_int_eq(REQ_ERROR, feed_bytes(&p, &buf, msg, N(msg)));
+    ck_assert_int_eq(REQ_ERROR, feed_bytes(&p, &buf, msg, N(msg)));
 }
+END_TEST
 
-static void
-test_req_unsupported_atyp(void)
+START_TEST(test_req_unsupported_atyp)
 {
     struct socks5_request p;
     request_parser_init(&p);
@@ -154,11 +153,11 @@ test_req_unsupported_atyp(void)
     buffer  buf;
     buffer_init(&buf, N(raw), raw);
     uint8_t msg[] = {0x05, 0x01, 0x00, 0x09}; /* ATYP 0x09 unsupported */
-    assert_int_eq(REQ_ERROR, feed_bytes(&p, &buf, msg, N(msg)));
+    ck_assert_int_eq(REQ_ERROR, feed_bytes(&p, &buf, msg, N(msg)));
 }
+END_TEST
 
-static void
-test_req_reply_format(void)
+START_TEST(test_req_reply_format)
 {
     uint8_t raw[16];
     buffer  buf;
@@ -169,14 +168,14 @@ test_req_reply_format(void)
     /* VER REP RSV ATYP=IPv4 BND.ADDR(4)=0 BND.PORT(2)=0 -> 10 bytes */
     uint8_t expected[] = {0x05, 0x07, 0x00, 0x01, 0, 0, 0, 0, 0, 0};
     for (size_t i = 0; i < N(expected); i++) {
-        assert(buffer_can_read(&buf));
-        assert_uint_eq(expected[i], buffer_read(&buf));
+        ck_assert(buffer_can_read(&buf));
+        ck_assert_uint_eq(expected[i], buffer_read(&buf));
     }
-    assert(!buffer_can_read(&buf));
+    ck_assert(!buffer_can_read(&buf));
 }
+END_TEST
 
-static void
-test_req_reply_format_ipv6(void)
+START_TEST(test_req_reply_format_ipv6)
 {
     uint8_t raw[32];
     buffer  buf;
@@ -186,14 +185,14 @@ test_req_reply_format_ipv6(void)
 
     uint8_t expected[22] = {0x05, 0x00, 0x00, 0x04};
     for (size_t i = 0; i < N(expected); i++) {
-        assert(buffer_can_read(&buf));
-        assert_uint_eq(expected[i], buffer_read(&buf));
+        ck_assert(buffer_can_read(&buf));
+        ck_assert_uint_eq(expected[i], buffer_read(&buf));
     }
-    assert(!buffer_can_read(&buf));
+    ck_assert(!buffer_can_read(&buf));
 }
+END_TEST
 
-static void
-test_req_reply_addr_ipv4(void)
+START_TEST(test_req_reply_addr_ipv4)
 {
     uint8_t raw[16];
     buffer  buf;
@@ -205,7 +204,7 @@ test_req_reply_addr_ipv4(void)
     };
     addr.sin_addr.s_addr = htonl(0x7F000001);
 
-    assert(fill_request_reply_addr(&buf, SOCKS5_REP_SUCCESS,
+    ck_assert(fill_request_reply_addr(&buf, SOCKS5_REP_SUCCESS,
                                       (const struct sockaddr *)&addr));
 
     uint8_t expected[] = {
@@ -214,25 +213,40 @@ test_req_reply_addr_ipv4(void)
         0x1F, 0x90
     };
     for (size_t i = 0; i < N(expected); i++) {
-        assert(buffer_can_read(&buf));
-        assert_uint_eq(expected[i], buffer_read(&buf));
+        ck_assert(buffer_can_read(&buf));
+        ck_assert_uint_eq(expected[i], buffer_read(&buf));
     }
-    assert(!buffer_can_read(&buf));
+    ck_assert(!buffer_can_read(&buf));
+}
+END_TEST
+
+Suite *suite(void)
+{
+    Suite *s  = suite_create("request");
+    TCase *tc = tcase_create("request");
+
+    tcase_add_test(tc, test_req_ipv4_connect);
+    tcase_add_test(tc, test_req_ipv6_connect);
+    tcase_add_test(tc, test_req_domain_connect);
+    tcase_add_test(tc, test_req_domain_split_feed);
+    tcase_add_test(tc, test_req_bad_version);
+    tcase_add_test(tc, test_req_bad_rsv);
+    tcase_add_test(tc, test_req_unsupported_atyp);
+    tcase_add_test(tc, test_req_reply_format);
+    tcase_add_test(tc, test_req_reply_format_ipv6);
+    tcase_add_test(tc, test_req_reply_addr_ipv4);
+    suite_add_tcase(s, tc);
+
+    return s;
 }
 
-int
-main(void)
+int main(void)
 {
-    int failures = 0;
-    failures += test_run_case(test_req_ipv4_connect, "test_req_ipv4_connect");
-    failures += test_run_case(test_req_ipv6_connect, "test_req_ipv6_connect");
-    failures += test_run_case(test_req_domain_connect, "test_req_domain_connect");
-    failures += test_run_case(test_req_domain_split_feed, "test_req_domain_split_feed");
-    failures += test_run_case(test_req_bad_version, "test_req_bad_version");
-    failures += test_run_case(test_req_bad_rsv, "test_req_bad_rsv");
-    failures += test_run_case(test_req_unsupported_atyp, "test_req_unsupported_atyp");
-    failures += test_run_case(test_req_reply_format, "test_req_reply_format");
-    failures += test_run_case(test_req_reply_format_ipv6, "test_req_reply_format_ipv6");
-    failures += test_run_case(test_req_reply_addr_ipv4, "test_req_reply_addr_ipv4");
-    return failures == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
+    SRunner *sr = srunner_create(suite());
+    int      number_failed;
+
+    srunner_run_all(sr, CK_NORMAL);
+    number_failed = srunner_ntests_failed(sr);
+    srunner_free(sr);
+    return (number_failed == 0) ? EXIT_SUCCESS : EXIT_FAILURE;
 }
