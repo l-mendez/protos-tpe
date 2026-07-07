@@ -1366,9 +1366,9 @@ test_socks5_resolver_pool_rejects_when_capacity_is_exhausted(void)
     assert_int_eq(socketpair(AF_UNIX, SOCK_STREAM, 0, fds), 0);
     struct socks5_conn *c = new_registered_test_conn(s, fds[0]);
 
-    assert(socks5_resolver_pool_start());
+    assert_true(socks5_resolver_pool_start());
     resolver_jobs_in_system = RESOLVER_MAX_JOBS;
-    assert(!resolver_queue_job(c, "localhost", "80"));
+    assert_false(resolver_queue_job(c, "localhost", "80"));
     resolver_jobs_in_system = 0;
     socks5_resolver_pool_stop();
 
@@ -1492,7 +1492,7 @@ test_socks5_resolver_job_captures_notify_target(void)
     resolver_pool_started = true;
     pthread_mutex_unlock(&resolver_mutex);
 
-    assert(resolver_queue_job(c, "host.example", "443"));
+    assert_true(resolver_queue_job(c, "host.example", "443"));
 
     pthread_mutex_lock(&resolver_mutex);
     struct resolver_job *job = c->resolver_job;

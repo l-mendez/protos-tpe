@@ -9,20 +9,61 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-#define assert_int_eq(a, b) assert((a) == (b))
-#define assert_int_ne(a, b) assert((a) != (b))
-#define assert_int_ge(a, b) assert((a) >= (b))
-#define assert_int_gt(a, b) assert((a) > (b))
-#define assert_int_lt(a, b) assert((a) < (b))
-#define assert_uint_eq(a, b) assert((a) == (b))
-#define assert_uint_ne(a, b) assert((a) != (b))
-#define assert_uint_ge(a, b) assert((a) >= (b))
-#define assert_ptr_eq(a, b) assert((a) == (b))
-#define assert_ptr_ne(a, b) assert((a) != (b))
-#define assert_ptr_null(a) assert((a) == NULL)
-#define assert_ptr_nonnull(a) assert((a) != NULL)
-#define assert_str_eq(a, b) assert(strcmp((a), (b)) == 0)
-#define assert_str_ne(a, b) assert(strcmp((a), (b)) != 0)
+/*
+ * Operands are evaluated into locals before the comparison so that any
+ * function calls run unconditionally, even under -DNDEBUG where assert()
+ * expands to nothing. This also keeps calls out of assert() itself, which
+ * cppcheck flags as assertWithSideEffect.
+ */
+#define assert_cmp(a, op, b)          \
+    do {                              \
+        __typeof__(a) _a = (a);       \
+        __typeof__(b) _b = (b);       \
+        assert(_a op _b);             \
+    } while (0)
+
+#define assert_int_eq(a, b) assert_cmp(a, ==, b)
+#define assert_int_ne(a, b) assert_cmp(a, !=, b)
+#define assert_int_ge(a, b) assert_cmp(a, >=, b)
+#define assert_int_gt(a, b) assert_cmp(a, >, b)
+#define assert_int_lt(a, b) assert_cmp(a, <, b)
+#define assert_uint_eq(a, b) assert_cmp(a, ==, b)
+#define assert_uint_ne(a, b) assert_cmp(a, !=, b)
+#define assert_uint_ge(a, b) assert_cmp(a, >=, b)
+#define assert_ptr_eq(a, b) assert_cmp(a, ==, b)
+#define assert_ptr_ne(a, b) assert_cmp(a, !=, b)
+#define assert_ptr_null(a)              \
+    do {                                \
+        __typeof__(a) _a = (a);         \
+        assert(_a == NULL);             \
+    } while (0)
+#define assert_ptr_nonnull(a)           \
+    do {                                \
+        __typeof__(a) _a = (a);         \
+        assert(_a != NULL);             \
+    } while (0)
+#define assert_str_eq(a, b)             \
+    do {                                \
+        const char *_a = (a);           \
+        const char *_b = (b);           \
+        assert(strcmp(_a, _b) == 0);    \
+    } while (0)
+#define assert_str_ne(a, b)             \
+    do {                                \
+        const char *_a = (a);           \
+        const char *_b = (b);           \
+        assert(strcmp(_a, _b) != 0);    \
+    } while (0)
+#define assert_true(a)                  \
+    do {                                \
+        __typeof__(a) _a = (a);         \
+        assert(_a);                     \
+    } while (0)
+#define assert_false(a)                 \
+    do {                                \
+        __typeof__(a) _a = (a);         \
+        assert(!_a);                    \
+    } while (0)
 
 static int
 test_run_case(void (*test)(void), const char *name)
