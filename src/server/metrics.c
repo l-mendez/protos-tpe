@@ -1,54 +1,43 @@
+#include <string.h>
+
 #include "metrics.h"
 
-/* Estado global de métricas. Volátil por diseño (req 6): si el servidor se
- * reinicia, las estadísticas pueden perderse. Se accede sólo desde el hilo del
- * selector, así que no hace falta sincronización. */
-static uint64_t historical_connections     = 0;
-static size_t   concurrent_connections     = 0;
-static size_t   max_concurrent_connections = 0;
-static uint64_t bytes_client_to_origin     = 0;
-static uint64_t bytes_origin_to_client     = 0;
+/* Estado volátil por diseño (req 6): si el servidor se reinicia, las estadísticas
+ * pueden perderse. La instancia la posee el llamador (main); se accede sólo desde
+ * el hilo del selector, así que no hace falta sincronización. */
 
 void
-metrics_connection_opened(void)
+metrics_init(struct Metrics *m)
 {
-    historical_connections++;
-    concurrent_connections++;
-    if (concurrent_connections > max_concurrent_connections) {
-        max_concurrent_connections = concurrent_connections;
+    memset(m, 0, sizeof(*m));
+}
+
+void
+metrics_connection_opened(struct Metrics *m)
+{
+    m->historical_connections++;
+    m->active_connections++;
+    if (m->active_connections > m->max_active_connections) {
+        m->max_active_connections = m->active_connections;
     }
 }
 
 void
-metrics_connection_closed(void)
+metrics_connection_closed(struct Metrics *m)
 {
-    if (concurrent_connections > 0) {
-        concurrent_connections--;
+    if (m->active_connections > 0) {
+        m->active_connections--;
     }
 }
 
 void
-metrics_bytes_client_to_origin(size_t n)
+metrics_bytes_client_to_origin(struct Metrics *m, size_t n)
 {
-    bytes_client_to_origin += n;
+    m->bytes_client_to_origin += n;
 }
 
 void
-metrics_bytes_origin_to_client(size_t n)
+metrics_bytes_origin_to_client(struct Metrics *m, size_t n)
 {
-    bytes_origin_to_client += n;
-}
-
-struct metrics_snapshot
-metrics_get(void)
-{
-    struct metrics_snapshot snap = {
-        .historical_connections     = historical_connections,
-        .concurrent_connections     = concurrent_connections,
-        .max_concurrent_connections = max_concurrent_connections,
-        .bytes_client_to_origin     = bytes_client_to_origin,
-        .bytes_origin_to_client     = bytes_origin_to_client,
-        .total_bytes                = bytes_client_to_origin + bytes_origin_to_client,
-    };
-    return snap;
+    m->bytes_origin_to_client += n;
 }

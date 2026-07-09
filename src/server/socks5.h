@@ -5,6 +5,7 @@
 #include <stddef.h>
 
 #include "args.h"
+#include "metrics.h"
 #include "selector.h"
 
 /**
@@ -31,6 +32,13 @@ socks5_passive_accept(struct selector_key *key);
  */
 void
 socks5_set_users(const struct socks5args *args);
+
+/**
+ * Inyecta la instancia de métricas del proceso. Debe llamarse antes de aceptar
+ * conexiones. El almacenamiento vive en main() durante toda la ejecución.
+ */
+void
+socks5_set_metrics(struct Metrics *m);
 
 /** Inicializa el pool acotado de resolución DNS. Es idempotente. */
 bool

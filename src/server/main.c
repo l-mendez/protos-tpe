@@ -4,6 +4,7 @@
 #include <unistd.h>
 
 #include "args.h"
+#include "metrics.h"
 #include "selector.h"
 #include "server.h"
 #include "socks5.h"
@@ -61,6 +62,11 @@ main(const int argc, char **argv)
     struct socks5args args;
     parse_args(argc, argv, &args);
     socks5_set_users(&args);
+
+    /* Única instancia de métricas del proceso; vive durante toda la ejecución. */
+    static struct Metrics metrics;
+    metrics_init(&metrics);
+    socks5_set_metrics(&metrics);
 
     /* Las escrituras a sockets cerrados no deben matar al proceso. */
     signal(SIGPIPE, SIG_IGN);

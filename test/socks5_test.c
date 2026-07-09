@@ -25,6 +25,9 @@
 static fd_selector           test_selector;
 static volatile sig_atomic_t test_stop;
 
+/* Instancia de métricas para las pruebas; inyectada en socks5 desde main(). */
+static struct Metrics        test_metrics;
+
 /* No users configured: the default policy for the no-auth tests. */
 static const struct socks5args no_users = { 0 };
 
@@ -111,7 +114,7 @@ static struct socks5_conn *new_registered_test_conn(fd_selector s,
     ck_assert_int_eq(selector_register(s, client_fd, &socks5_handler, OP_NOOP, c),
                      SELECTOR_SUCCESS);
     conn_list_push(c);
-    active_connections++;
+    metrics_connection_opened(&test_metrics);
     return c;
 }
 
@@ -1602,6 +1605,7 @@ static Suite *socks5_suite(void)
 
 int main(void)
 {
+    socks5_set_metrics(&test_metrics);
     SRunner *sr = srunner_create(socks5_suite());
     srunner_run_all(sr, CK_NORMAL);
     int failed = srunner_ntests_failed(sr);

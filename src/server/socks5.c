@@ -104,10 +104,11 @@ struct socks5_conn {
     uint8_t       raw_write[SOCKS5_BUFFER_SIZE];
 };
 
-static size_t active_connections = 0;
-
 /** Lista doblemente enlazada de conexiones activas, para recorrer en el reaper. */
 static struct socks5_conn *conn_list = NULL;
+
+/** Métricas del proceso, inyectadas por main() vía socks5_set_metrics(). */
+static struct Metrics *metrics = NULL;
 
 /** Tiempo máximo (en segundos) sin actividad para fases de handshake/connect. */
 #define SOCKS5_INACTIVITY_TIMEOUT 60
@@ -144,8 +145,7 @@ static void conn_mark_inactive(struct socks5_conn *c)
 {
     if (c->active_counted) {
         c->active_counted = false;
-        active_connections--;
-        metrics_connection_closed();
+        metrics_connection_closed(metrics);
     }
 }
 
@@ -511,6 +511,11 @@ void socks5_set_users(const struct socks5args *args)
     configured_users = args->users;
 }
 
+void socks5_set_metrics(struct Metrics *m)
+{
+    metrics = m;
+}
+
 /* true si hay al menos un usuario configurado: en ese caso la autenticación
  * user/pass es obligatoria durante la negociación. */
 static bool auth_required(void)
@@ -542,7 +547,7 @@ static bool credentials_match(const uint8_t *user, size_t ulen,
 
 size_t socks5_active_connections(void)
 {
-    return active_connections;
+    return metrics->active_connections;
 }
 
 /* ------------------------------------------------------------------ helpers */
@@ -1086,9 +1091,9 @@ static unsigned relay_read(struct selector_key *key)
     if (n > 0) {
         buffer_write_adv(dst, n);
         if (from_client) {
-            metrics_bytes_client_to_origin((size_t) n);
+            metrics_bytes_client_to_origin(metrics, (size_t) n);
         } else {
-            metrics_bytes_origin_to_client((size_t) n);
+            metrics_bytes_origin_to_client(metrics, (size_t) n);
         }
         return relay_update(c);
     }
@@ -1405,6 +1410,5 @@ void socks5_passive_accept(struct selector_key *key)
     }
     conn->last_activity = monotonic_now();
     conn_list_push(conn);
-    active_connections++;
-    metrics_connection_opened();
+    metrics_connection_opened(metrics);
 }
