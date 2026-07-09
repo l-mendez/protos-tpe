@@ -25,4 +25,4 @@ de texto para primero poder probarlo con netcat y mas facil de debuggear
 ha que definir un fin de linea (podria ser simplemente un \n) tratando de dejarlo
 lo mas simple posible
 
-revisar 
+¡
