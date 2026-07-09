@@ -14,6 +14,7 @@
 #include "args.h"
 #include "auth.h"
 #include "buffer.h"
+#include "metrics.h"
 #include "negotiation.h"
 #include "request.h"
 #include "socks5.h"
@@ -144,6 +145,7 @@ static void conn_mark_inactive(struct socks5_conn *c)
     if (c->active_counted) {
         c->active_counted = false;
         active_connections--;
+        metrics_connection_closed();
     }
 }
 
@@ -1083,6 +1085,11 @@ static unsigned relay_read(struct selector_key *key)
 
     if (n > 0) {
         buffer_write_adv(dst, n);
+        if (from_client) {
+            metrics_bytes_client_to_origin((size_t) n);
+        } else {
+            metrics_bytes_origin_to_client((size_t) n);
+        }
         return relay_update(c);
     }
     if (n < 0 && would_block(errno)) {
@@ -1399,4 +1406,5 @@ void socks5_passive_accept(struct selector_key *key)
     conn->last_activity = monotonic_now();
     conn_list_push(conn);
     active_connections++;
+    metrics_connection_opened();
 }
