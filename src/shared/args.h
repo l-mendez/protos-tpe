@@ -3,7 +3,7 @@
 
 #define MAX_USERS 10
 
-struct users
+struct User
 {
     char* name;
     char* pass;
@@ -17,7 +17,9 @@ struct socks5args
     char* mng_addr;
     unsigned short mng_port;
 
-    struct users users[MAX_USERS];
+    struct User users[MAX_USERS];
+
+    struct User admin; 
 };
 
 /**

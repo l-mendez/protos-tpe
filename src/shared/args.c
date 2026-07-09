@@ -26,7 +26,7 @@ port(const char* s)
 }
 
 static void
-user(char* s, struct users* user)
+user(char* s, struct User* user)
 {
     char* p = strchr(s, ':');
     if (p == NULL)
@@ -52,7 +52,7 @@ version(void)
 }
 
 static void
-usage(const char* progname)
+usage(const char* progname, uint32_t users)
 {
     fprintf(stderr,
             "Usage: %s [OPTION]...\n"
@@ -62,11 +62,12 @@ usage(const char* progname)
             "   -L <conf  addr>  Dirección donde servirá el servicio de management.\n"
             "   -p <SOCKS port>  Puerto entrante conexiones SOCKS.\n"
             "   -P <conf port>   Puerto entrante conexiones configuracion\n"
-            "   -u <name>:<pass> Usuario y contraseña de usuario que puede usar el proxy. Hasta 10.\n"
+            "   -u <name>:<pass> Usuario y contraseña de usuario que puede usar el proxy. Hasta %d.\n"
+            "   -a <name>:<pass> Usuario y contraseña de usuario administrador\n"
             "   -v               Imprime información sobre la versión versión y termina.\n"
 
             "\n",
-            progname);
+            progname, users);
     exit(1);
 }
 
@@ -91,14 +92,14 @@ parse_args(const int argc, char** argv, struct socks5args* args)
             {0, 0, 0, 0}
         };
 
-        c = getopt_long(argc, argv, "hl:L:p:P:u:v", long_options, &option_index);
+        c = getopt_long(argc, argv, "hl:L:p:P:u:a:v", long_options, &option_index);
         if (c == -1)
             break;
 
         switch (c)
         {
         case 'h':
-            usage(argv[0]);
+            usage(argv[0], MAX_USERS);
             break;
         case 'l':
             args->socks_addr = optarg;
@@ -123,6 +124,9 @@ parse_args(const int argc, char** argv, struct socks5args* args)
                 user(optarg, args->users + nusers);
                 nusers++;
             }
+            break;
+        case 'a':
+            user(optarg, &args->admin);
             break;
         case 'v':
             version();

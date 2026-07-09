@@ -502,7 +502,7 @@ static bool resolver_is_completed(struct socks5_conn *c)
 
 /* Usuarios configurados por línea de comandos (-u user:pass). Apuntan al arreglo
  * de `struct socks5args`, que vive durante toda la ejecución en main(). */
-static const struct users *configured_users = NULL;
+static const struct User *configured_users = NULL;
 
 void socks5_set_users(const struct socks5args *args)
 {

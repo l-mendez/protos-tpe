@@ -30,7 +30,7 @@ El servidor DEBE:
    * Las diferentes implementaciones PUEDEN decidir disponibilizar otros cambios en tiempo de ejecución de otras configuraciones (memoria utilizada en I/O, timeouts, etc).
    * Esto no es una extensión del protocolo SOCKS, es un nuevo protocolo escuchando en otro socket pasivo en otro puerto dentro del mismo programa.
 8. Implementar un registro de acceso que permita a un administrador entender los accesos de cada uno de los usuarios. Pensar en el caso de que llega una queja externa y el administrador debe saber quién fue el que se conectó a cierto sitio web y cuando.
-9. Realizar graceful shutdown: manejar señales SIGTERM y SIGINT para realizar un apagado controlado. Al recibir la señal, el servidor DEBE dejar de escuchar por nuevas conexiones y esperar a que todas las conexiones existentes terminen antes de apagarse. Una segunda señal PUEDE apagarlo forzosamente.
+9. Realizar graceful shutdown: manejar señales SIGTERM y SIGINT para realizar un apagado controlado. Al recibir la señal, el servidor DEBE dejar de escuchar por nuevas conexiones y esperar a que todas las conexiones existentes terminen antes de apagarse. Una segunda señal PUEDE apagarlo forzosamente.p
 
 ## 2. Requerimientos No Funcionales
 
