@@ -51,6 +51,42 @@ Los objetos intermedios se generan bajo `obj/`.
 make test       # compila y ejecuta la batería de pruebas unitarias
 ```
 
+## Desarrollo en Linux con Docker
+
+El proyecto también puede compilarse dentro de un contenedor Linux sin cambiar
+el flujo local de macOS. Docker monta este directorio en `/workspace`, por lo
+que los artefactos generados por `make` siguen apareciendo en `bin/` y `obj/`
+del proyecto.
+
+Construir la imagen:
+
+```sh
+docker compose build
+```
+
+Entrar al entorno Linux:
+
+```sh
+docker compose run --rm --service-ports dev
+```
+
+Dentro del contenedor:
+
+```sh
+make
+make test
+./bin/server -L 0.0.0.0
+```
+
+El puerto SOCKS (`1080`) y el puerto de management (`8080`) quedan publicados
+en el host cuando se usa `--service-ports`. Para acceder al servicio de
+management desde macOS, usar `-L 0.0.0.0`; el valor por defecto `127.0.0.1`
+escucha sólo dentro del contenedor.
+
+Como `bin/` y `obj/` se comparten entre macOS y Linux, ejecutar `make clean` al
+cambiar de un entorno al otro evita reutilizar objetos compilados para el otro
+sistema.
+
 ## Estructura
 
 ```
