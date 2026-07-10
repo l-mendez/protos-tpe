@@ -6,6 +6,7 @@
 
 #include "access_log.h"
 #include "args.h"
+#include "config.h"
 #include "metrics.h"
 #include "selector.h"
 #include "users.h"
@@ -49,6 +50,13 @@ socks5_set_metrics(struct Metrics *m);
  */
 void
 socks5_set_access_log(struct AccessLog *l);
+
+/**
+ * Inyecta la configuración runtime (timeouts, tope de conexiones, tamaño de
+ * buffer). Si no se llama, se usan los defaults de compilación. Vive en main().
+ */
+void
+socks5_set_config(struct Config *cfg);
 
 /** Inicializa el pool acotado de resolución DNS. Es idempotente. */
 bool

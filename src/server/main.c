@@ -5,6 +5,7 @@
 
 #include "access_log.h"
 #include "args.h"
+#include "config.h"
 #include "metrics.h"
 #include "selector.h"
 #include "server.h"
@@ -89,6 +90,12 @@ main(const int argc, char **argv)
                         "se continúa sin registro\n", args.access_log_path);
     }
     socks5_set_access_log(&access_log);
+
+    /* Configuración runtime, modificable por el protocolo de monitoreo. El techo
+     * de conexiones es la capacidad con la que se crea el selector. */
+    static struct Config config;
+    config_init(&config, MAX_CONNECTIONS);
+    socks5_set_config(&config);
 
     /* Las escrituras a sockets cerrados no deben matar al proceso. */
     signal(SIGPIPE, SIG_IGN);

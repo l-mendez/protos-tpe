@@ -342,7 +342,9 @@ timestamp = fecha-hora ISO-8601 en UTC, p.ej. 2026-07-09T14:22:01Z
 usuario   = nombre del usuario del proxy, o "-" si fue anónimo
 comando   = "CONNECT"
 destino   = host ":" puerto   (host = IPv4 / IPv6 / FQDN según lo pedido)
-resultado = "OK" / "CONN-REFUSED" / "HOST-UNREACH" / "DNS-FAIL" / "AUTH-FAIL" / "DENIED"
+resultado = "OK" / "CONN-REFUSED" / "HOST-UNREACH" / "NET-UNREACH"
+          / "TTL-EXPIRED" / "CMD-NOT-SUPPORTED" / "ATYP-NOT-SUPPORTED"
+          / "GENERAL-FAILURE"
 ```
 
 Ejemplo:

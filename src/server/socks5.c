@@ -17,6 +17,7 @@
 #include "metrics.h"
 #include "negotiation.h"
 #include "access_log.h"
+#include "config.h"
 #include "request.h"
 #include "socks5.h"
 #include "stm.h"
@@ -99,11 +100,13 @@ struct socks5_conn {
     bool active_counted;
     bool arrival_error;     /* un on_arrival falló al armar intereses: hay que cerrar */
 
-    /* read_buffer: client → origin.  write_buffer: origin → client. */
+    /* read_buffer: client → origin.  write_buffer: origin → client.
+     * El almacenamiento se asigna en el heap al aceptar, con el tamaño vigente
+     * (io_buffer_size), y se libera al destruir el conn. */
     struct buffer read_buffer;
     struct buffer write_buffer;
-    uint8_t       raw_read[SOCKS5_BUFFER_SIZE];
-    uint8_t       raw_write[SOCKS5_BUFFER_SIZE];
+    uint8_t      *raw_read;
+    uint8_t      *raw_write;
 };
 
 /** Lista doblemente enlazada de conexiones activas, para recorrer en el reaper. */
@@ -161,6 +164,8 @@ static void conn_free_if_unreferenced(struct socks5_conn *c)
     if (c->resolution != NULL) {
         freeaddrinfo(c->resolution);
     }
+    free(c->raw_read);
+    free(c->raw_write);
     free(c);
 }
 
@@ -526,6 +531,27 @@ static struct AccessLog *access_log = NULL;
 void socks5_set_access_log(struct AccessLog *l)
 {
     access_log = l;
+}
+
+/* Configuración runtime, inyectada por main() vía socks5_set_config(). NULL =>
+ * usar los defaults de compilación. */
+static struct Config *config = NULL;
+
+void socks5_set_config(struct Config *cfg)
+{
+    config = cfg;
+}
+
+/* Valor efectivo de cada parámetro: el de config si está inyectada, o el default
+ * de compilación en su ausencia (p.ej. en tests unitarios). */
+static uint32_t effective_conn_timeout(void)
+{
+    return config != NULL ? config_conn_timeout(config) : SOCKS5_INACTIVITY_TIMEOUT;
+}
+
+static uint32_t effective_io_buffer_size(void)
+{
+    return config != NULL ? config_io_buffer_size(config) : SOCKS5_BUFFER_SIZE;
 }
 
 /* true si hay al menos un usuario cargado: en ese caso la autenticación
@@ -1313,7 +1339,7 @@ void socks5_reap_idle(fd_selector s)
         }
 
         const time_t timeout = (st == RELAY) ? SOCKS5_RELAY_IDLE_TIMEOUT
-                                             : SOCKS5_INACTIVITY_TIMEOUT;
+                                             : (time_t)effective_conn_timeout();
         if (now - c->last_activity < timeout) {
             c = nxt;
             continue;
@@ -1428,6 +1454,15 @@ void socks5_passive_accept(struct selector_key *key)
     if (client < 0) {
         return;
     }
+
+    /* Tope blando de conexiones concurrentes: si ya se alcanzó, rechazar la nueva
+     * sin registrarla. */
+    if (config != NULL && metrics != NULL &&
+        metrics->active_connections >= config_max_connections(config)) {
+        close(client);
+        return;
+    }
+
     if (selector_fd_set_nio(client) < 0) {
         close(client);
         return;
@@ -1438,8 +1473,20 @@ void socks5_passive_accept(struct selector_key *key)
         close(client);
         return;
     }
-    buffer_init(&conn->read_buffer, sizeof(conn->raw_read), conn->raw_read);
-    buffer_init(&conn->write_buffer, sizeof(conn->raw_write), conn->raw_write);
+
+    /* Buffers de relay en el heap, con el tamaño vigente (io_buffer_size). */
+    const size_t bufsize = effective_io_buffer_size();
+    conn->raw_read  = malloc(bufsize);
+    conn->raw_write = malloc(bufsize);
+    if (conn->raw_read == NULL || conn->raw_write == NULL) {
+        free(conn->raw_read);
+        free(conn->raw_write);
+        free(conn);
+        close(client);
+        return;
+    }
+    buffer_init(&conn->read_buffer, bufsize, conn->raw_read);
+    buffer_init(&conn->write_buffer, bufsize, conn->raw_write);
 
     conn->selector   = key->s;
     conn->client_fd  = client;
@@ -1453,6 +1500,8 @@ void socks5_passive_accept(struct selector_key *key)
     stm_init(&conn->stm);
 
     if (selector_register(key->s, client, &socks5_handler, OP_READ, conn) != SELECTOR_SUCCESS) {
+        free(conn->raw_read);
+        free(conn->raw_write);
         free(conn);
         close(client);
         return;

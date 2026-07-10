@@ -22,6 +22,7 @@
 #include "../src/server/metrics.c"
 #include "../src/server/users.c"
 #include "../src/server/access_log.c"
+#include "../src/server/config.c"
 #include "../src/server/socks5.c"
 
 static fd_selector           test_selector;
@@ -112,8 +113,12 @@ static struct socks5_conn *new_registered_test_conn(fd_selector s,
     c->stm.states    = socks5_states;
     c->stm.max_state = ERROR;
     stm_init(&c->stm);
-    buffer_init(&c->read_buffer, sizeof(c->raw_read), c->raw_read);
-    buffer_init(&c->write_buffer, sizeof(c->raw_write), c->raw_write);
+    c->raw_read  = malloc(SOCKS5_BUFFER_SIZE);
+    c->raw_write = malloc(SOCKS5_BUFFER_SIZE);
+    ck_assert_ptr_nonnull(c->raw_read);
+    ck_assert_ptr_nonnull(c->raw_write);
+    buffer_init(&c->read_buffer, SOCKS5_BUFFER_SIZE, c->raw_read);
+    buffer_init(&c->write_buffer, SOCKS5_BUFFER_SIZE, c->raw_write);
 
     ck_assert_int_eq(selector_register(s, client_fd, &socks5_handler, OP_NOOP, c),
                      SELECTOR_SUCCESS);
