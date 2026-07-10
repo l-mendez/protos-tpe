@@ -323,10 +323,18 @@ Notas de semántica:
 ## 7. Registro de accesos
 
 Cada registro de acceso describe un intento de conexión de un usuario del proxy a
-un destino. El servidor DEBE mantener en memoria los registros más recientes en
-un buffer circular de tamaño fijo (volátil).
+un destino. A diferencia de las métricas (que PUEDEN ser volátiles), el registro
+de accesos DEBE ser **persistente**: el servidor lo escribe, una línea por
+intento de conexión, en un **archivo de texto** en modo *append* (su ruta se
+configura al iniciar el servidor). Así sobrevive a reinicios y queda disponible
+para consulta *offline* (p.ej. ante una queja externa recibida días después).
 
-Formato de un registro (una línea):
+El comando `LOG [n]` (Sección 4.8) devuelve las últimas `n` líneas de ese
+archivo como vista de conveniencia sobre el protocolo; el archivo sigue siendo la
+fuente de verdad.
+
+Formato de un registro (una línea, idéntico en el archivo y en la respuesta a
+`LOG`):
 
 ```
 registro = timestamp SP usuario SP comando SP destino SP resultado
@@ -448,3 +456,17 @@ VCHAR         = %x21-7E
   coinciden 1:1 con los campos internos de la implementación, eliminando tablas
   de traducción entre la especificación y el código. Se usa una única convención
   para métricas y configuración por consistencia.
+- **Registro de accesos en archivo (persistente), métricas en memoria (volátil).**
+  La consigna permite explícitamente que las métricas sean volátiles, pero no el
+  registro de accesos, cuyo caso de uso (una queja externa que llega días después)
+  exige durabilidad. Por eso el registro se escribe *append* a un archivo —la
+  fuente de verdad— y `LOG` sólo devuelve las últimas líneas como vista. Escribir
+  a un archivo regular es compatible con el modelo no bloqueante: la restricción
+  aplica a la E/S de *sockets*, no a los archivos (que no son *pollables* y se
+  consideran siempre listos).
+- **Dos convenciones de nombres según la clase de token.** Los **comandos** usan
+  `KEBAB-CASE` en mayúsculas (son verbos del protocolo, alineados con los
+  subcomandos del cliente CLI, p.ej. `client add-user`); las **claves** de datos
+  usan `snake_case` (alineadas con los campos internos). La distinción de
+  mayúsculas/minúsculas ya separa ambas clases de tokens; el separador sólo
+  refuerza ese límite.
