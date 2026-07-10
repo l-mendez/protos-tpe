@@ -20,6 +20,7 @@
 #include "../src/server/request.c"
 #include "../src/server/auth.c"
 #include "../src/server/metrics.c"
+#include "../src/server/users.c"
 #include "../src/server/socks5.c"
 
 static fd_selector           test_selector;
@@ -28,8 +29,10 @@ static volatile sig_atomic_t test_stop;
 /* Instancia de métricas para las pruebas; inyectada en socks5 desde main(). */
 static struct Metrics        test_metrics;
 
-/* No users configured: the default policy for the no-auth tests. */
-static const struct socks5args no_users = { 0 };
+/* Almacenes de usuarios para las pruebas, inyectados en socks5 desde main():
+ * `no_users` queda vacío (auth no requerida); `users_alice` tiene alice/secret. */
+static struct Users          no_users;
+static struct Users          users_alice;
 
 static void *run_selector(void *unused)
 {
@@ -380,8 +383,7 @@ END_TEST
  * gets AUTH status 0x00 and a CONNECT to a live origin succeeds. */
 START_TEST(test_socks5_userpass_valid_advances)
 {
-    static const struct socks5args args = { .users = { { .name = "alice", .pass = "secret" } } };
-    socks5_set_users(&args);
+    socks5_set_users(&users_alice);
 
     struct origin_ctx origin = start_origin();
     pthread_t origin_tid;
@@ -431,8 +433,7 @@ END_TEST
  * 1929) without ever reaching the request phase. */
 START_TEST(test_socks5_userpass_invalid_rejected)
 {
-    static const struct socks5args args = { .users = { { .name = "alice", .pass = "secret" } } };
-    socks5_set_users(&args);
+    socks5_set_users(&users_alice);
 
     int            passive;
     unsigned short port = start_server(&passive);
@@ -559,8 +560,7 @@ END_TEST
  * authentication: it gets 0xFF and is closed. */
 START_TEST(test_socks5_auth_required_rejects_noauth)
 {
-    static const struct socks5args args = { .users = { { .name = "alice", .pass = "secret" } } };
-    socks5_set_users(&args);
+    socks5_set_users(&users_alice);
 
     int            passive;
     unsigned short port = start_server(&passive);
@@ -1606,6 +1606,9 @@ static Suite *socks5_suite(void)
 int main(void)
 {
     socks5_set_metrics(&test_metrics);
+    users_init(&no_users);
+    users_init(&users_alice);
+    users_add(&users_alice, "alice", "secret");
     SRunner *sr = srunner_create(socks5_suite());
     srunner_run_all(sr, CK_NORMAL);
     int failed = srunner_ntests_failed(sr);

@@ -8,6 +8,7 @@
 #include "selector.h"
 #include "server.h"
 #include "socks5.h"
+#include "users.h"
 
 #define MAX_CONNECTIONS 1024
 
@@ -61,7 +62,14 @@ main(const int argc, char **argv)
 {
     struct socks5args args;
     parse_args(argc, argv, &args);
-    socks5_set_users(&args);
+
+    // almacenamiento de usuarios modificable en runtime
+    static struct Users users;
+    users_init(&users);
+    for (int i = 0; i < MAX_USERS && args.users[i].name != NULL; i++) {
+        users_add(&users, args.users[i].name, args.users[i].pass);
+    }
+    socks5_set_users(&users);
 
     /* Única instancia de métricas del proceso; vive durante toda la ejecución. */
     static struct Metrics metrics;

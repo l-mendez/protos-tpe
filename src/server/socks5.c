@@ -19,6 +19,7 @@
 #include "request.h"
 #include "socks5.h"
 #include "stm.h"
+#include "users.h"
 
 #define SOCKS5_BUFFER_SIZE 4096
 #define RESOLVER_WORKERS 4
@@ -502,13 +503,14 @@ static bool resolver_is_completed(struct socks5_conn *c)
     return completed;
 }
 
-/* Usuarios configurados por línea de comandos (-u user:pass). Apuntan al arreglo
- * de `struct socks5args`, que vive durante toda la ejecución en main(). */
-static const struct User *configured_users = NULL;
+/* Almacén de usuarios del proxy, inyectado por main() vía socks5_set_users(). Es
+ * la fuente de verdad en runtime: el protocolo de monitoreo lo modifica en
+ * caliente y acá sólo se lo lee. */
+static struct Users *users_store = NULL;
 
-void socks5_set_users(const struct socks5args *args)
+void socks5_set_users(struct Users *users)
 {
-    configured_users = args->users;
+    users_store = users;
 }
 
 void socks5_set_metrics(struct Metrics *m)
@@ -516,33 +518,11 @@ void socks5_set_metrics(struct Metrics *m)
     metrics = m;
 }
 
-/* true si hay al menos un usuario configurado: en ese caso la autenticación
+/* true si hay al menos un usuario cargado: en ese caso la autenticación
  * user/pass es obligatoria durante la negociación. */
 static bool auth_required(void)
 {
-    return configured_users != NULL && configured_users[0].name != NULL;
-}
-
-/* Valida user/pass contra los usuarios configurados. El arreglo está terminado
- * por un name == NULL (o llega a MAX_USERS): no hay contador explícito.
- *
- * La comparación es por longitud (memcmp), no strcmp: el usuario y la contraseña
- * son cadenas con longitud explícita (RFC 1929) que podrían contener un 0x00. Se
- * rechazan las credenciales vacías. */
-static bool credentials_match(const uint8_t *user, size_t ulen,
-                              const uint8_t *pass, size_t plen)
-{
-    if (configured_users == NULL || ulen == 0 || plen == 0) {
-        return false;
-    }
-    for (int i = 0; i < MAX_USERS && configured_users[i].name != NULL; i++) {
-        const char *name = configured_users[i].name;
-        const char *pw   = configured_users[i].pass;
-        if (strlen(name) == ulen && memcmp(name, user, ulen) == 0) {
-            return strlen(pw) == plen && memcmp(pw, pass, plen) == 0;
-        }
-    }
-    return false;
+    return users_store != NULL && users_count(users_store) > 0;
 }
 
 size_t socks5_active_connections(void)
@@ -665,8 +645,8 @@ static unsigned auth_read(struct selector_key *key)
         return AUTH_READ; /* lectura parcial: esperar más datos */
     }
 
-    bool ok = credentials_match(c->auth.uname, c->auth.ulen,
-                                c->auth.passwd, c->auth.plen);
+    bool ok = users_validate(users_store, c->auth.uname, c->auth.ulen,
+                             c->auth.passwd, c->auth.plen);
     c->auth_status = ok ? SOCKS5_AUTH_OK : SOCKS5_AUTH_FAIL;
     fill_auth_reply(&c->write_buffer, c->auth_status);
     if (selector_set_interest_key(key, OP_WRITE) != SELECTOR_SUCCESS) {

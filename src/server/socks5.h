@@ -7,6 +7,7 @@
 #include "args.h"
 #include "metrics.h"
 #include "selector.h"
+#include "users.h"
 
 /**
  * socks5.c -- handler de conexión SOCKS5 (RFC 1928) modelado como máquina de
@@ -26,12 +27,13 @@ void
 socks5_passive_accept(struct selector_key *key);
 
 /**
- * Registra los usuarios configurados (-u user:pass) contra los que se validan
- * las credenciales durante la autenticación user/pass (RFC 1929). El arreglo
- * apuntado debe sobrevivir a todas las conexiones (vive en main()).
+ * Inyecta el almacén de usuarios del proxy contra el que se validan las
+ * credenciales durante la autenticación user/pass (RFC 1929). El almacén vive en
+ * main() y puede ser modificado en caliente por el protocolo de monitoreo; debe
+ * sobrevivir a todas las conexiones.
  */
 void
-socks5_set_users(const struct socks5args *args);
+socks5_set_users(struct Users *users);
 
 /**
  * Inyecta la instancia de métricas del proceso. Debe llamarse antes de aceptar
