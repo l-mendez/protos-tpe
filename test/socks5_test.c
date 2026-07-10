@@ -21,6 +21,7 @@
 #include "../src/server/auth.c"
 #include "../src/server/metrics.c"
 #include "../src/server/users.c"
+#include "../src/server/access_log.c"
 #include "../src/server/socks5.c"
 
 static fd_selector           test_selector;
@@ -339,6 +340,58 @@ START_TEST(test_socks5_negotiation_then_connect)
     ck_assert_int_eq(memcmp(loopback, reply.addr, sizeof(loopback)), 0);
     ck_assert_uint_ne(0, reply.port);
 
+    close(client);
+    test_stop = 1;
+    pthread_join(loop, NULL);
+    pthread_join(origin_tid, NULL);
+    close(origin.listen_fd);
+    selector_destroy(test_selector);
+    selector_close();
+    close(passive);
+}
+END_TEST
+
+/* Un CONNECT exitoso deja un registro de acceso "OK" con el destino correcto. */
+START_TEST(test_socks5_access_log_records_connect)
+{
+    socks5_set_users(&no_users);
+
+    char log_path[] = "/tmp/socks5_alogXXXXXX";
+    int  lfd = mkstemp(log_path);
+    ck_assert_int_ge(lfd, 0);
+    close(lfd);
+    struct AccessLog alog;
+    ck_assert(access_log_open(&alog, log_path));
+    socks5_set_access_log(&alog);
+
+    struct origin_ctx origin = start_origin();
+    pthread_t origin_tid;
+    ck_assert_int_eq(pthread_create(&origin_tid, NULL, origin_echo_run, &origin), 0);
+
+    int            passive;
+    unsigned short port = start_server(&passive);
+
+    test_stop = 0;
+    pthread_t loop;
+    ck_assert_int_eq(pthread_create(&loop, NULL, run_selector, NULL), 0);
+
+    int client = connect_to(port);
+    negotiate_noauth(client);
+    send_connect_ipv4(client, origin.port);
+    struct socks5_reply_info reply = read_socks5_reply_info(client);
+    ck_assert_uint_eq(SOCKS5_REP_SUCCESS, reply.rep);
+
+    char lines[8][ACCESS_LOG_LINE_MAX];
+    ck_assert_uint_eq(1, access_log_tail(&alog, 10, lines, 8));
+
+    /* usuario anónimo, CONNECT al literal IPv4 del origen, resultado OK */
+    char expected[128];
+    snprintf(expected, sizeof(expected), "- CONNECT 127.0.0.1:%u OK", origin.port);
+    ck_assert_ptr_nonnull(strstr(lines[0], expected));
+
+    socks5_set_access_log(NULL);
+    access_log_close(&alog);
+    unlink(log_path);
     close(client);
     test_stop = 1;
     pthread_join(loop, NULL);
@@ -1570,6 +1623,7 @@ static Suite *socks5_suite(void)
     TCase *tc = tcase_create("stm");
     tcase_set_timeout(tc, 10);
     tcase_add_test(tc, test_socks5_negotiation_then_connect);
+    tcase_add_test(tc, test_socks5_access_log_records_connect);
     tcase_add_test(tc, test_socks5_bad_version_closes);
     tcase_add_test(tc, test_socks5_userpass_valid_advances);
     tcase_add_test(tc, test_socks5_userpass_invalid_rejected);

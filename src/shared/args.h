@@ -19,7 +19,9 @@ struct socks5args
 
     struct User users[MAX_USERS];
 
-    struct User admin; 
+    struct User admin;
+
+    char* access_log_path; /* ruta del registro de accesos (-o) */
 };
 
 /**

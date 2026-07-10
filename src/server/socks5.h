@@ -4,6 +4,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 
+#include "access_log.h"
 #include "args.h"
 #include "metrics.h"
 #include "selector.h"
@@ -41,6 +42,13 @@ socks5_set_users(struct Users *users);
  */
 void
 socks5_set_metrics(struct Metrics *m);
+
+/**
+ * Inyecta el registro de accesos. Si no se llama (o se pasa NULL), los intentos
+ * de CONNECT no se registran. El almacenamiento vive en main().
+ */
+void
+socks5_set_access_log(struct AccessLog *l);
 
 /** Inicializa el pool acotado de resolución DNS. Es idempotente. */
 bool

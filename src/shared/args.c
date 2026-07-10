@@ -64,6 +64,7 @@ usage(const char* progname, uint32_t users)
             "   -P <conf port>   Puerto entrante conexiones configuracion\n"
             "   -u <name>:<pass> Usuario y contraseña de usuario que puede usar el proxy. Hasta %d.\n"
             "   -a <name>:<pass> Usuario y contraseña de usuario administrador\n"
+            "   -o <path>        Archivo de registro de accesos (default: access.log).\n"
             "   -v               Imprime información sobre la versión versión y termina.\n"
 
             "\n",
@@ -82,6 +83,8 @@ parse_args(const int argc, char** argv, struct socks5args* args)
     args->mng_addr = "127.0.0.1";
     args->mng_port = 8080;
 
+    args->access_log_path = "access.log";
+
     int c;
     int nusers = 0;
 
@@ -92,7 +95,7 @@ parse_args(const int argc, char** argv, struct socks5args* args)
             {0, 0, 0, 0}
         };
 
-        c = getopt_long(argc, argv, "hl:L:p:P:u:a:v", long_options, &option_index);
+        c = getopt_long(argc, argv, "hl:L:p:P:u:a:o:v", long_options, &option_index);
         if (c == -1)
             break;
 
@@ -127,6 +130,9 @@ parse_args(const int argc, char** argv, struct socks5args* args)
             break;
         case 'a':
             user(optarg, &args->admin);
+            break;
+        case 'o':
+            args->access_log_path = optarg;
             break;
         case 'v':
             version();

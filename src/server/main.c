@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <unistd.h>
 
+#include "access_log.h"
 #include "args.h"
 #include "metrics.h"
 #include "selector.h"
@@ -17,8 +18,9 @@
 static volatile sig_atomic_t terminate = 0;
 
 struct server_runtime {
-    fd_selector selector;
-    int         passive;
+    fd_selector       selector;
+    int               passive;
+    struct AccessLog *access_log;
 };
 
 static void
@@ -54,6 +56,9 @@ server_cleanup(struct server_runtime *runtime, const int ret, const char *err)
     if (runtime->passive >= 0) {
         close(runtime->passive);
     }
+    if (runtime->access_log != NULL) {
+        access_log_close(runtime->access_log);
+    }
     return ret;
 }
 
@@ -76,13 +81,23 @@ main(const int argc, char **argv)
     metrics_init(&metrics);
     socks5_set_metrics(&metrics);
 
+    /* Registro de accesos persistente. Si no se puede abrir, se continúa sin él
+     * (el proxy sigue operativo; sólo no queda traza de accesos). */
+    static struct AccessLog access_log;
+    if (!access_log_open(&access_log, args.access_log_path)) {
+        fprintf(stderr, "advertencia: no se pudo abrir el registro de accesos '%s'; "
+                        "se continúa sin registro\n", args.access_log_path);
+    }
+    socks5_set_access_log(&access_log);
+
     /* Las escrituras a sockets cerrados no deben matar al proceso. */
     signal(SIGPIPE, SIG_IGN);
     install_signal_handlers();
 
     struct server_runtime runtime = {
-        .selector = NULL,
-        .passive  = -1,
+        .selector   = NULL,
+        .passive    = -1,
+        .access_log = &access_log,
     };
 
     runtime.passive = server_setup_passive(args.socks_addr, args.socks_port);

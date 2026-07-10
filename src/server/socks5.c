@@ -16,6 +16,7 @@
 #include "buffer.h"
 #include "metrics.h"
 #include "negotiation.h"
+#include "access_log.h"
 #include "request.h"
 #include "socks5.h"
 #include "stm.h"
@@ -518,6 +519,15 @@ void socks5_set_metrics(struct Metrics *m)
     metrics = m;
 }
 
+/* Registro de accesos, inyectado por main() vía socks5_set_access_log(). NULL si
+ * el registro está deshabilitado. */
+static struct AccessLog *access_log = NULL;
+
+void socks5_set_access_log(struct AccessLog *l)
+{
+    access_log = l;
+}
+
 /* true si hay al menos un usuario cargado: en ese caso la autenticación
  * user/pass es obligatoria durante la negociación. */
 static bool auth_required(void)
@@ -706,19 +716,72 @@ static void sanitize_domain(char *dst, size_t cap, const uint8_t *src, size_t n)
     dst[i] = '\0';
 }
 
-static void log_request_dst(const struct socks5_request *r)
+/* Formatea el destino del request como "host:puerto" (para el log de accesos). */
+static void format_request_dst(char *out, size_t cap, const struct socks5_request *r)
 {
     if (r->atyp == SOCKS5_ATYP_DOMAIN) {
         char host[256];
         sanitize_domain(host, sizeof(host), r->dst_addr, r->addr_len);
-        printf("socks5: CONNECT domain %s:%u\n", host, r->dst_port);
+        snprintf(out, cap, "%s:%u", host, r->dst_port);
     } else {
         char      host[INET6_ADDRSTRLEN] = "?";
         const int af = (r->atyp == SOCKS5_ATYP_IPV6) ? AF_INET6 : AF_INET;
         inet_ntop(af, r->dst_addr, host, sizeof(host));
-        printf("socks5: CONNECT %s %s:%u\n",
-               af == AF_INET6 ? "ipv6" : "ipv4", host, r->dst_port);
+        snprintf(out, cap, "%s:%u", host, r->dst_port);
     }
+}
+
+static void log_request_dst(const struct socks5_request *r)
+{
+    char dst[300];
+    format_request_dst(dst, sizeof(dst), r);
+    const char *kind = r->atyp == SOCKS5_ATYP_DOMAIN ? "domain"
+                     : r->atyp == SOCKS5_ATYP_IPV6   ? "ipv6"
+                                                     : "ipv4";
+    printf("socks5: CONNECT %s %s\n", kind, dst);
+}
+
+/* Traduce el código REP de SOCKS5 (§6) al token de resultado del log (§7). */
+static const char *result_token(uint8_t rep)
+{
+    switch (rep) {
+        case SOCKS5_REP_SUCCESS:            return "OK";
+        case SOCKS5_REP_CONNECTION_REFUSED: return "CONN-REFUSED";
+        case SOCKS5_REP_HOST_UNREACHABLE:   return "HOST-UNREACH";
+        case SOCKS5_REP_NETWORK_UNREACHABLE:return "NET-UNREACH";
+        case SOCKS5_REP_TTL_EXPIRED:        return "TTL-EXPIRED";
+        case SOCKS5_REP_CMD_NOT_SUPPORTED:  return "CMD-NOT-SUPPORTED";
+        case SOCKS5_REP_ATYP_NOT_SUPPORTED: return "ATYP-NOT-SUPPORTED";
+        default:                            return "GENERAL-FAILURE";
+    }
+}
+
+/* Anexa un registro de acceso para este CONNECT. No-op si el log no está
+ * inyectado. El usuario es el autenticado (o "-" si fue anónimo); se neutralizan
+ * bytes no imprimibles y espacios para que la línea siga siendo parseable. */
+static void socks5_log_access(struct socks5_conn *c, const char *result)
+{
+    if (access_log == NULL) {
+        return;
+    }
+    char user[USERS_NAME_MAX + 1];
+    if (c->method == SOCKS5_METHOD_USERPASS && c->auth.ulen > 0) {
+        size_t n = c->auth.ulen;
+        if (n > USERS_NAME_MAX) {
+            n = USERS_NAME_MAX;
+        }
+        for (size_t i = 0; i < n; i++) {
+            uint8_t ch = c->auth.uname[i];
+            user[i] = (ch > 0x20 && ch < 0x7f) ? (char)ch : '?';
+        }
+        user[n] = '\0';
+    } else {
+        user[0] = '-';
+        user[1] = '\0';
+    }
+    char dst[300];
+    format_request_dst(dst, sizeof(dst), &c->request);
+    access_log_record(access_log, user, dst, result);
 }
 
 /* Encola la respuesta de error del request (RFC 1928 §6) y pasa a escribirla
@@ -728,6 +791,11 @@ static unsigned request_fail(struct selector_key *key, uint8_t rep)
 {
     struct socks5_conn *c = key->data;
     c->connected = false;
+    /* Registrar sólo si el request llegó a parsearse (hay destino válido); un
+     * error de parseo no representa un acceso a un destino conocido. */
+    if (request_done(&c->request)) {
+        socks5_log_access(c, result_token(rep));
+    }
     fill_request_reply(&c->write_buffer, rep, SOCKS5_ATYP_IPV4);
     if (c->origin_fd != -1) {
         int ofd = c->origin_fd;
@@ -865,6 +933,7 @@ static unsigned request_connect_success(struct selector_key *key)
     }
 
     c->connected = true;
+    socks5_log_access(c, "OK");
     if (!fill_request_reply_addr(&c->write_buffer, SOCKS5_REP_SUCCESS,
                                  (const struct sockaddr *)&local)) {
         return request_fail(key, SOCKS5_REP_GENERAL_FAILURE);
