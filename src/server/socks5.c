@@ -777,7 +777,6 @@ static const char *result_token(uint8_t rep)
         case SOCKS5_REP_NETWORK_UNREACHABLE:return "NET-UNREACH";
         case SOCKS5_REP_TTL_EXPIRED:        return "TTL-EXPIRED";
         case SOCKS5_REP_CMD_NOT_SUPPORTED:  return "CMD-NOT-SUPPORTED";
-        case SOCKS5_REP_ATYP_NOT_SUPPORTED: return "ATYP-NOT-SUPPORTED";
         default:                            return "GENERAL-FAILURE";
     }
 }

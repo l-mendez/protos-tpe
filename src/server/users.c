@@ -60,6 +60,12 @@ users_del(struct Users *s, const char *name)
 }
 
 bool
+users_exists(const struct Users *s, const char *name)
+{
+    return users_find(s, name) >= 0;
+}
+
+bool
 users_validate(const struct Users *s,
                const uint8_t *user, size_t ulen,
                const uint8_t *pass, size_t plen)

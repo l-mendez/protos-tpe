@@ -140,12 +140,26 @@ START_TEST(test_users_validate_length_exact)
 }
 END_TEST
 
+START_TEST(test_users_exists)
+{
+    struct Users s;
+    users_init(&s);
+    ck_assert(!users_exists(&s, "alan"));
+    ck_assert(users_add(&s, "alan", "pwd"));
+    ck_assert(users_exists(&s, "alan"));
+    ck_assert(!users_exists(&s, "juana"));
+    ck_assert(users_del(&s, "alan"));
+    ck_assert(!users_exists(&s, "alan"));
+}
+END_TEST
+
 Suite *suite(void)
 {
     Suite *s  = suite_create("users");
     TCase *tc = tcase_create("users");
 
     tcase_add_test(tc, test_users_empty);
+    tcase_add_test(tc, test_users_exists);
     tcase_add_test(tc, test_users_add_and_validate);
     tcase_add_test(tc, test_users_add_duplicate);
     tcase_add_test(tc, test_users_add_invalid);

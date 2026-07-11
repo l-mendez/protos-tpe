@@ -44,6 +44,10 @@ users_add(struct Users *s, const char *name, const char *pass);
 bool
 users_del(struct Users *s, const char *name);
 
+/** true si existe un usuario con ese nombre. */
+bool
+users_exists(const struct Users *s, const char *name);
+
 /**
  * Valida credenciales con longitudes explícitas (RFC 1929: pueden contener
  * cualquier byte). La comparación es exacta en longitud. Credenciales vacías

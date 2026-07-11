@@ -343,8 +343,7 @@ usuario   = nombre del usuario del proxy, o "-" si fue anónimo
 comando   = "CONNECT"
 destino   = host ":" puerto   (host = IPv4 / IPv6 / FQDN según lo pedido)
 resultado = "OK" / "CONN-REFUSED" / "HOST-UNREACH" / "NET-UNREACH"
-          / "TTL-EXPIRED" / "CMD-NOT-SUPPORTED" / "ATYP-NOT-SUPPORTED"
-          / "GENERAL-FAILURE"
+          / "TTL-EXPIRED" / "CMD-NOT-SUPPORTED" / "GENERAL-FAILURE"
 ```
 
 Ejemplo:
