@@ -1,17 +1,7 @@
 # TODO
 
-- [x] add `-a` arg
-- [x] agregar metricas necesarias
-- [x] Refactor para run-time configuration (de algunas cosas)
-- [x] hacer un parser para el protocolo smcp
-- [x] maquina de estados para el smcp
-- [x] integrarlo con `main.c` abriendo un socket mas
-- [x] hacer el cliente
-
-## Despues
-
-- [ ] ver si hacer El coso que maneja usuarios un adt (o en general hacer las cosas adts)
-- [ ] ver si queremos devolver el indice o un usuario
-- [ ] revisar `sock5.c` que quedo de como 1400 lineas (ver si se puede modularizar un poco mas)
+- [ ] ver de hacer todos los modulos adts por consistencia y porque extraño pi
+- [ ] ver si queremos devolver el indice o un usuario en `users_find`
+- [ ] revisar `sock5.c` que quedo de como 1500 lineas (ver si se puede modularizar un poco mas)
 - [ ] por ahi organizarlo mejor en carpetas tipo `include` para los .h o tambien carpeta aparte para los adts? ver si eso tiene sentido
-- [ ] hacer el parser un adt para reutilizarlo tanto en el cliente como en main
+- [ ] hacer un adt `arg_parser` para reutilizarlo en el cliente y en el servidor, podemos mantener el `arg.c` pero que este llame al parser por atras (agrega mas codigo boiler plate pero me parece mejor para modularizar)
