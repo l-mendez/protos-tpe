@@ -1,11 +1,51 @@
+#include <errno.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/socket.h>
+#include <unistd.h>
 
 #include "mgmt.h"
 #include "mgmt_parser.h"
+
+/* Linux evita el SIGPIPE en send() con esta flag; macOS no la define y lo
+ * resuelve ignorando SIGPIPE en el arranque, así que aquí degrada a 0. */
+#ifndef MSG_NOSIGNAL
+#define MSG_NOSIGNAL 0
+#endif
+
+#define MGMT_OUTPUT_BUFFER_SIZE ((MGMT_LOG_MAX_LINES * ACCESS_LOG_LINE_MAX) + 4096)
+
+struct mgmt_conn {
+    int                 fd;
+    struct mgmt_session session;
+    struct mgmt_parser  parser;
+    buffer              read_buffer;
+    buffer              write_buffer;
+    uint8_t             raw_read[MGMT_LINE_MAX];
+    uint8_t             raw_write[MGMT_OUTPUT_BUFFER_SIZE];
+    bool                close_after_write;
+};
+
+static const struct mgmt_deps *global_deps = NULL;
+static size_t                  active_mgmt_connections = 0;
+
+static void mgmt_read(struct selector_key *key);
+static void mgmt_write(struct selector_key *key);
+static void mgmt_close(struct selector_key *key);
+
+static const fd_handler mgmt_handler = {
+    .handle_read  = mgmt_read,
+    .handle_write = mgmt_write,
+    .handle_close = mgmt_close,
+};
+
+static inline int would_block(int err)
+{
+    return err == EAGAIN || err == EWOULDBLOCK || err == EINTR;
+}
 
 /* ------------------------------------------------------------ admin creds */
 
@@ -36,6 +76,16 @@ void mgmt_session_init(struct mgmt_session *s, const struct mgmt_deps *deps)
 {
     s->deps          = deps;
     s->authenticated = false;
+}
+
+void mgmt_set_deps(const struct mgmt_deps *deps)
+{
+    global_deps = deps;
+}
+
+size_t mgmt_active_connections(void)
+{
+    return active_mgmt_connections;
 }
 
 /* ------------------------------------------------------------ helpers */
@@ -278,4 +328,142 @@ bool mgmt_handle_line(struct mgmt_session *s, char *line, buffer *out)
         out_printf(out, "-ERR unknown command\n");
     }
     return false;
+}
+
+/* ----------------------------------------------------- selector glue / accept */
+
+static bool has_output(struct mgmt_conn *c)
+{
+    return buffer_can_read(&c->write_buffer);
+}
+
+static void process_input_lines(struct mgmt_conn *c)
+{
+    while (buffer_can_read(&c->read_buffer) && buffer_can_write(&c->write_buffer)) {
+        mgmt_line_state st = mgmt_parser_feed(&c->parser, &c->read_buffer);
+        if (st == MGMT_LINE_INCOMPLETE) {
+            break;
+        }
+        if (st == MGMT_LINE_READY) {
+            if (mgmt_handle_line(&c->session, c->parser.line, &c->write_buffer)) {
+                c->close_after_write = true;
+            }
+        } else {
+            out_printf(&c->write_buffer, "-ERR line too long\n");
+        }
+        mgmt_parser_reset(&c->parser);
+        if (c->close_after_write) {
+            break;
+        }
+    }
+}
+
+static void mgmt_read(struct selector_key *key)
+{
+    struct mgmt_conn *c = key->data;
+
+    if (!buffer_can_write(&c->write_buffer)) {
+        selector_set_interest_key(key, OP_WRITE);
+        return;
+    }
+
+    buffer_compact(&c->read_buffer);
+
+    size_t   space;
+    uint8_t *ptr = buffer_write_ptr(&c->read_buffer, &space);
+    ssize_t  n   = recv(key->fd, ptr, space, 0);
+    if (n > 0) {
+        buffer_write_adv(&c->read_buffer, n);
+        process_input_lines(c);
+        selector_set_interest_key(key, has_output(c) ? OP_WRITE : OP_READ);
+        return;
+    }
+    if (n < 0 && would_block(errno)) {
+        return;
+    }
+    selector_unregister_fd(key->s, key->fd);
+}
+
+static void mgmt_write(struct selector_key *key)
+{
+    struct mgmt_conn *c = key->data;
+
+    if (has_output(c)) {
+        size_t   pending;
+        uint8_t *ptr = buffer_read_ptr(&c->write_buffer, &pending);
+        ssize_t  n   = send(key->fd, ptr, pending, MSG_NOSIGNAL);
+        if (n > 0) {
+            buffer_read_adv(&c->write_buffer, n);
+        } else if (n < 0 && would_block(errno)) {
+            return;
+        } else {
+            selector_unregister_fd(key->s, key->fd);
+            return;
+        }
+    }
+
+    if (has_output(c)) {
+        selector_set_interest_key(key, OP_WRITE);
+        return;
+    }
+    if (c->close_after_write) {
+        selector_unregister_fd(key->s, key->fd);
+        return;
+    }
+
+    process_input_lines(c);
+    if (has_output(c)) {
+        selector_set_interest_key(key, OP_WRITE);
+    } else {
+        selector_set_interest_key(key, OP_READ);
+    }
+}
+
+static void mgmt_close(struct selector_key *key)
+{
+    struct mgmt_conn *c = key->data;
+
+    close(key->fd);
+    if (active_mgmt_connections > 0) {
+        active_mgmt_connections--;
+    }
+    free(c);
+}
+
+void mgmt_passive_accept(struct selector_key *key)
+{
+    if (global_deps == NULL) {
+        return;
+    }
+
+    struct sockaddr_storage from;
+    socklen_t               from_len = sizeof(from);
+    int client = accept(key->fd, (struct sockaddr *)&from, &from_len);
+    if (client < 0) {
+        return;
+    }
+
+    if (selector_fd_set_nio(client) < 0) {
+        close(client);
+        return;
+    }
+
+    struct mgmt_conn *conn = calloc(1, sizeof(*conn));
+    if (conn == NULL) {
+        close(client);
+        return;
+    }
+
+    conn->fd = client;
+    mgmt_session_init(&conn->session, global_deps);
+    mgmt_parser_init(&conn->parser);
+    buffer_init(&conn->read_buffer, sizeof(conn->raw_read), conn->raw_read);
+    buffer_init(&conn->write_buffer, sizeof(conn->raw_write), conn->raw_write);
+
+    if (selector_register(key->s, client, &mgmt_handler, OP_READ, conn) != SELECTOR_SUCCESS) {
+        free(conn);
+        close(client);
+        return;
+    }
+    active_mgmt_connections++;
 }

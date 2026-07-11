@@ -7,6 +7,7 @@
 #include "buffer.h"
 #include "config.h"
 #include "metrics.h"
+#include "selector.h"
 #include "users.h"
 
 /**
@@ -61,5 +62,17 @@ mgmt_session_init(struct mgmt_session *s, const struct mgmt_deps *deps);
  */
 bool
 mgmt_handle_line(struct mgmt_session *s, char *line, buffer *out);
+
+/** Inyecta los recursos compartidos usados por las sesiones SMCP. */
+void
+mgmt_set_deps(const struct mgmt_deps *deps);
+
+/** Handler de accept para el socket pasivo de management. */
+void
+mgmt_passive_accept(struct selector_key *key);
+
+/** Cantidad de conexiones SMCP activas, usada para el drenado al apagar. */
+size_t
+mgmt_active_connections(void);
 
 #endif
