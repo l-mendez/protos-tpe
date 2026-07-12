@@ -20,13 +20,21 @@
 #include "../src/server/request.c"
 #include "../src/server/auth.c"
 #include "../src/server/metrics.c"
+#include "../src/server/users.c"
+#include "../src/server/access_log.c"
+#include "../src/server/config.c"
 #include "../src/server/socks5.c"
 
 static fd_selector           test_selector;
 static volatile sig_atomic_t test_stop;
 
-/* No users configured: the default policy for the no-auth tests. */
-static const struct socks5args no_users = { 0 };
+/* Instancia de métricas para las pruebas; inyectada en socks5 desde main(). */
+static struct Metrics        test_metrics;
+
+/* Almacenes de usuarios para las pruebas, inyectados en socks5 desde main():
+ * `no_users` queda vacío (auth no requerida); `users_alice` tiene alice/secret. */
+static struct Users          no_users;
+static struct Users          users_alice;
 
 static void *run_selector(void *unused)
 {
@@ -105,13 +113,17 @@ static struct socks5_conn *new_registered_test_conn(fd_selector s,
     c->stm.states    = socks5_states;
     c->stm.max_state = ERROR;
     stm_init(&c->stm);
-    buffer_init(&c->read_buffer, sizeof(c->raw_read), c->raw_read);
-    buffer_init(&c->write_buffer, sizeof(c->raw_write), c->raw_write);
+    c->raw_read  = malloc(SOCKS5_BUFFER_SIZE);
+    c->raw_write = malloc(SOCKS5_BUFFER_SIZE);
+    ck_assert_ptr_nonnull(c->raw_read);
+    ck_assert_ptr_nonnull(c->raw_write);
+    buffer_init(&c->read_buffer, SOCKS5_BUFFER_SIZE, c->raw_read);
+    buffer_init(&c->write_buffer, SOCKS5_BUFFER_SIZE, c->raw_write);
 
     ck_assert_int_eq(selector_register(s, client_fd, &socks5_handler, OP_NOOP, c),
                      SELECTOR_SUCCESS);
     conn_list_push(c);
-    active_connections++;
+    metrics_connection_opened(&test_metrics);
     return c;
 }
 
@@ -344,6 +356,58 @@ START_TEST(test_socks5_negotiation_then_connect)
 }
 END_TEST
 
+/* Un CONNECT exitoso deja un registro de acceso "OK" con el destino correcto. */
+START_TEST(test_socks5_access_log_records_connect)
+{
+    socks5_set_users(&no_users);
+
+    char log_path[] = "/tmp/socks5_alogXXXXXX";
+    int  lfd = mkstemp(log_path);
+    ck_assert_int_ge(lfd, 0);
+    close(lfd);
+    struct AccessLog alog;
+    ck_assert(access_log_open(&alog, log_path));
+    socks5_set_access_log(&alog);
+
+    struct origin_ctx origin = start_origin();
+    pthread_t origin_tid;
+    ck_assert_int_eq(pthread_create(&origin_tid, NULL, origin_echo_run, &origin), 0);
+
+    int            passive;
+    unsigned short port = start_server(&passive);
+
+    test_stop = 0;
+    pthread_t loop;
+    ck_assert_int_eq(pthread_create(&loop, NULL, run_selector, NULL), 0);
+
+    int client = connect_to(port);
+    negotiate_noauth(client);
+    send_connect_ipv4(client, origin.port);
+    struct socks5_reply_info reply = read_socks5_reply_info(client);
+    ck_assert_uint_eq(SOCKS5_REP_SUCCESS, reply.rep);
+
+    char lines[8][ACCESS_LOG_LINE_MAX];
+    ck_assert_uint_eq(1, access_log_tail(&alog, 10, lines, 8));
+
+    /* usuario anónimo, CONNECT al literal IPv4 del origen, resultado OK */
+    char expected[128];
+    snprintf(expected, sizeof(expected), "- CONNECT 127.0.0.1:%u OK", origin.port);
+    ck_assert_ptr_nonnull(strstr(lines[0], expected));
+
+    socks5_set_access_log(NULL);
+    access_log_close(&alog);
+    unlink(log_path);
+    close(client);
+    test_stop = 1;
+    pthread_join(loop, NULL);
+    pthread_join(origin_tid, NULL);
+    close(origin.listen_fd);
+    selector_destroy(test_selector);
+    selector_close();
+    close(passive);
+}
+END_TEST
+
 /* A bad version in the negotiation must drop the connection (EOF) rather than
  * reply. */
 START_TEST(test_socks5_bad_version_closes)
@@ -377,8 +441,7 @@ END_TEST
  * gets AUTH status 0x00 and a CONNECT to a live origin succeeds. */
 START_TEST(test_socks5_userpass_valid_advances)
 {
-    static const struct socks5args args = { .users = { { .name = "alice", .pass = "secret" } } };
-    socks5_set_users(&args);
+    socks5_set_users(&users_alice);
 
     struct origin_ctx origin = start_origin();
     pthread_t origin_tid;
@@ -428,8 +491,7 @@ END_TEST
  * 1929) without ever reaching the request phase. */
 START_TEST(test_socks5_userpass_invalid_rejected)
 {
-    static const struct socks5args args = { .users = { { .name = "alice", .pass = "secret" } } };
-    socks5_set_users(&args);
+    socks5_set_users(&users_alice);
 
     int            passive;
     unsigned short port = start_server(&passive);
@@ -556,8 +618,7 @@ END_TEST
  * authentication: it gets 0xFF and is closed. */
 START_TEST(test_socks5_auth_required_rejects_noauth)
 {
-    static const struct socks5args args = { .users = { { .name = "alice", .pass = "secret" } } };
-    socks5_set_users(&args);
+    socks5_set_users(&users_alice);
 
     int            passive;
     unsigned short port = start_server(&passive);
@@ -1567,6 +1628,7 @@ static Suite *socks5_suite(void)
     TCase *tc = tcase_create("stm");
     tcase_set_timeout(tc, 10);
     tcase_add_test(tc, test_socks5_negotiation_then_connect);
+    tcase_add_test(tc, test_socks5_access_log_records_connect);
     tcase_add_test(tc, test_socks5_bad_version_closes);
     tcase_add_test(tc, test_socks5_userpass_valid_advances);
     tcase_add_test(tc, test_socks5_userpass_invalid_rejected);
@@ -1602,6 +1664,10 @@ static Suite *socks5_suite(void)
 
 int main(void)
 {
+    socks5_set_metrics(&test_metrics);
+    users_init(&no_users);
+    users_init(&users_alice);
+    users_add(&users_alice, "alice", "secret");
     SRunner *sr = srunner_create(socks5_suite());
     srunner_run_all(sr, CK_NORMAL);
     int failed = srunner_ntests_failed(sr);

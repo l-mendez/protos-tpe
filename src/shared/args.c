@@ -1,5 +1,6 @@
 #include <stdio.h>     /* for printf */
 #include <stdlib.h>    /* for exit */
+#include <stdbool.h>
 #include <limits.h>    /* LONG_MIN et al */
 #include <string.h>    /* memset */
 #include <errno.h>
@@ -25,7 +26,7 @@ port(const char* s)
 }
 
 static void
-user(char* s, struct users* user)
+user(char* s, struct User* user)
 {
     char* p = strchr(s, ':');
     if (p == NULL)
@@ -51,7 +52,7 @@ version(void)
 }
 
 static void
-usage(const char* progname)
+usage(const char* progname, int users)
 {
     fprintf(stderr,
             "Usage: %s [OPTION]...\n"
@@ -61,11 +62,13 @@ usage(const char* progname)
             "   -L <conf  addr>  Dirección donde servirá el servicio de management.\n"
             "   -p <SOCKS port>  Puerto entrante conexiones SOCKS.\n"
             "   -P <conf port>   Puerto entrante conexiones configuracion\n"
-            "   -u <name>:<pass> Usuario y contraseña de usuario que puede usar el proxy. Hasta 10.\n"
+            "   -u <name>:<pass> Usuario y contraseña de usuario que puede usar el proxy. Hasta %d.\n"
+            "   -a <name>:<pass> Usuario y contraseña de usuario administrador\n"
+            "   -o <path>        Archivo de registro de accesos (default: access.log).\n"
             "   -v               Imprime información sobre la versión versión y termina.\n"
 
             "\n",
-            progname);
+            progname, users);
     exit(1);
 }
 
@@ -80,7 +83,7 @@ parse_args(const int argc, char** argv, struct socks5args* args)
     args->mng_addr = "127.0.0.1";
     args->mng_port = 8080;
 
-    args->disectors_enabled = true;
+    args->access_log_path = "access.log";
 
     int c;
     int nusers = 0;
@@ -92,23 +95,20 @@ parse_args(const int argc, char** argv, struct socks5args* args)
             {0, 0, 0, 0}
         };
 
-        c = getopt_long(argc, argv, "hl:L:Np:P:u:v", long_options, &option_index);
+        c = getopt_long(argc, argv, "hl:L:p:P:u:a:o:v", long_options, &option_index);
         if (c == -1)
             break;
 
         switch (c)
         {
         case 'h':
-            usage(argv[0]);
+            usage(argv[0], MAX_USERS);
             break;
         case 'l':
             args->socks_addr = optarg;
             break;
         case 'L':
             args->mng_addr = optarg;
-            break;
-        case 'N':
-            args->disectors_enabled = false;
             break;
         case 'p':
             args->socks_port = port(optarg);
@@ -127,6 +127,12 @@ parse_args(const int argc, char** argv, struct socks5args* args)
                 user(optarg, args->users + nusers);
                 nusers++;
             }
+            break;
+        case 'a':
+            user(optarg, &args->admin);
+            break;
+        case 'o':
+            args->access_log_path = optarg;
             break;
         case 'v':
             version();

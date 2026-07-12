@@ -1,11 +1,9 @@
 #ifndef ARGS_H_kFlmYm1tW9p5npzDr2opQJ9jM8
 #define ARGS_H_kFlmYm1tW9p5npzDr2opQJ9jM8
 
-#include <stdbool.h>
-
 #define MAX_USERS 10
 
-struct users
+struct User
 {
     char* name;
     char* pass;
@@ -19,9 +17,11 @@ struct socks5args
     char* mng_addr;
     unsigned short mng_port;
 
-    bool disectors_enabled;
+    struct User users[MAX_USERS];
 
-    struct users users[MAX_USERS];
+    struct User admin;
+
+    char* access_log_path; /* ruta del registro de accesos (-o) */
 };
 
 /**

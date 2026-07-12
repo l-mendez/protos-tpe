@@ -16,9 +16,12 @@
 #include "buffer.h"
 #include "metrics.h"
 #include "negotiation.h"
+#include "access_log.h"
+#include "config.h"
 #include "request.h"
 #include "socks5.h"
 #include "stm.h"
+#include "users.h"
 
 #define SOCKS5_BUFFER_SIZE 4096
 #define RESOLVER_WORKERS 4
@@ -97,17 +100,20 @@ struct socks5_conn {
     bool active_counted;
     bool arrival_error;     /* un on_arrival falló al armar intereses: hay que cerrar */
 
-    /* read_buffer: client → origin.  write_buffer: origin → client. */
+    /* read_buffer: client → origin.  write_buffer: origin → client.
+     * El almacenamiento se asigna en el heap al aceptar, con el tamaño vigente
+     * (io_buffer_size), y se libera al destruir el conn. */
     struct buffer read_buffer;
     struct buffer write_buffer;
-    uint8_t       raw_read[SOCKS5_BUFFER_SIZE];
-    uint8_t       raw_write[SOCKS5_BUFFER_SIZE];
+    uint8_t      *raw_read;
+    uint8_t      *raw_write;
 };
-
-static size_t active_connections = 0;
 
 /** Lista doblemente enlazada de conexiones activas, para recorrer en el reaper. */
 static struct socks5_conn *conn_list = NULL;
+
+/** Métricas del proceso, inyectadas por main() vía socks5_set_metrics(). */
+static struct Metrics *metrics = NULL;
 
 /** Tiempo máximo (en segundos) sin actividad para fases de handshake/connect. */
 #define SOCKS5_INACTIVITY_TIMEOUT 60
@@ -144,8 +150,7 @@ static void conn_mark_inactive(struct socks5_conn *c)
 {
     if (c->active_counted) {
         c->active_counted = false;
-        active_connections--;
-        metrics_connection_closed();
+        metrics_connection_closed(metrics);
     }
 }
 
@@ -159,6 +164,8 @@ static void conn_free_if_unreferenced(struct socks5_conn *c)
     if (c->resolution != NULL) {
         freeaddrinfo(c->resolution);
     }
+    free(c->raw_read);
+    free(c->raw_write);
     free(c);
 }
 
@@ -502,47 +509,61 @@ static bool resolver_is_completed(struct socks5_conn *c)
     return completed;
 }
 
-/* Usuarios configurados por línea de comandos (-u user:pass). Apuntan al arreglo
- * de `struct socks5args`, que vive durante toda la ejecución en main(). */
-static const struct users *configured_users = NULL;
+/* Almacén de usuarios del proxy, inyectado por main() vía socks5_set_users(). Es
+ * la fuente de verdad en runtime: el protocolo de monitoreo lo modifica en
+ * caliente y acá sólo se lo lee. */
+static struct Users *users_store = NULL;
 
-void socks5_set_users(const struct socks5args *args)
+void socks5_set_users(struct Users *users)
 {
-    configured_users = args->users;
+    users_store = users;
 }
 
-/* true si hay al menos un usuario configurado: en ese caso la autenticación
+void socks5_set_metrics(struct Metrics *m)
+{
+    metrics = m;
+}
+
+/* Registro de accesos, inyectado por main() vía socks5_set_access_log(). NULL si
+ * el registro está deshabilitado. */
+static struct AccessLog *access_log = NULL;
+
+void socks5_set_access_log(struct AccessLog *l)
+{
+    access_log = l;
+}
+
+/* Configuración runtime, inyectada por main() vía socks5_set_config(). NULL =>
+ * usar los defaults de compilación. */
+static struct Config *config = NULL;
+
+void socks5_set_config(struct Config *cfg)
+{
+    config = cfg;
+}
+
+/* Valor efectivo de cada parámetro: el de config si está inyectada, o el default
+ * de compilación en su ausencia (p.ej. en tests unitarios). */
+static uint32_t effective_conn_timeout(void)
+{
+    return config != NULL ? config_conn_timeout(config) : SOCKS5_INACTIVITY_TIMEOUT;
+}
+
+static uint32_t effective_io_buffer_size(void)
+{
+    return config != NULL ? config_io_buffer_size(config) : SOCKS5_BUFFER_SIZE;
+}
+
+/* true si hay al menos un usuario cargado: en ese caso la autenticación
  * user/pass es obligatoria durante la negociación. */
 static bool auth_required(void)
 {
-    return configured_users != NULL && configured_users[0].name != NULL;
-}
-
-/* Valida user/pass contra los usuarios configurados. El arreglo está terminado
- * por un name == NULL (o llega a MAX_USERS): no hay contador explícito.
- *
- * La comparación es por longitud (memcmp), no strcmp: el usuario y la contraseña
- * son cadenas con longitud explícita (RFC 1929) que podrían contener un 0x00. Se
- * rechazan las credenciales vacías. */
-static bool credentials_match(const uint8_t *user, size_t ulen,
-                              const uint8_t *pass, size_t plen)
-{
-    if (configured_users == NULL || ulen == 0 || plen == 0) {
-        return false;
-    }
-    for (int i = 0; i < MAX_USERS && configured_users[i].name != NULL; i++) {
-        const char *name = configured_users[i].name;
-        const char *pw   = configured_users[i].pass;
-        if (strlen(name) == ulen && memcmp(name, user, ulen) == 0) {
-            return strlen(pw) == plen && memcmp(pw, pass, plen) == 0;
-        }
-    }
-    return false;
+    return users_store != NULL && users_count(users_store) > 0;
 }
 
 size_t socks5_active_connections(void)
 {
-    return active_connections;
+    return metrics->active_connections;
 }
 
 /* ------------------------------------------------------------------ helpers */
@@ -660,8 +681,8 @@ static unsigned auth_read(struct selector_key *key)
         return AUTH_READ; /* lectura parcial: esperar más datos */
     }
 
-    bool ok = credentials_match(c->auth.uname, c->auth.ulen,
-                                c->auth.passwd, c->auth.plen);
+    bool ok = users_validate(users_store, c->auth.uname, c->auth.ulen,
+                             c->auth.passwd, c->auth.plen);
     c->auth_status = ok ? SOCKS5_AUTH_OK : SOCKS5_AUTH_FAIL;
     fill_auth_reply(&c->write_buffer, c->auth_status);
     if (selector_set_interest_key(key, OP_WRITE) != SELECTOR_SUCCESS) {
@@ -721,19 +742,71 @@ static void sanitize_domain(char *dst, size_t cap, const uint8_t *src, size_t n)
     dst[i] = '\0';
 }
 
-static void log_request_dst(const struct socks5_request *r)
+/* Formatea el destino del request como "host:puerto" (para el log de accesos). */
+static void format_request_dst(char *out, size_t cap, const struct socks5_request *r)
 {
     if (r->atyp == SOCKS5_ATYP_DOMAIN) {
         char host[256];
         sanitize_domain(host, sizeof(host), r->dst_addr, r->addr_len);
-        printf("socks5: CONNECT domain %s:%u\n", host, r->dst_port);
+        snprintf(out, cap, "%s:%u", host, r->dst_port);
     } else {
         char      host[INET6_ADDRSTRLEN] = "?";
         const int af = (r->atyp == SOCKS5_ATYP_IPV6) ? AF_INET6 : AF_INET;
         inet_ntop(af, r->dst_addr, host, sizeof(host));
-        printf("socks5: CONNECT %s %s:%u\n",
-               af == AF_INET6 ? "ipv6" : "ipv4", host, r->dst_port);
+        snprintf(out, cap, "%s:%u", host, r->dst_port);
     }
+}
+
+static void log_request_dst(const struct socks5_request *r)
+{
+    char dst[300];
+    format_request_dst(dst, sizeof(dst), r);
+    const char *kind = r->atyp == SOCKS5_ATYP_DOMAIN ? "domain"
+                     : r->atyp == SOCKS5_ATYP_IPV6   ? "ipv6"
+                                                     : "ipv4";
+    printf("socks5: CONNECT %s %s\n", kind, dst);
+}
+
+/* Traduce el código REP de SOCKS5 (§6) al token de resultado del log (§7). */
+static const char *result_token(uint8_t rep)
+{
+    switch (rep) {
+        case SOCKS5_REP_SUCCESS:            return "OK";
+        case SOCKS5_REP_CONNECTION_REFUSED: return "CONN-REFUSED";
+        case SOCKS5_REP_HOST_UNREACHABLE:   return "HOST-UNREACH";
+        case SOCKS5_REP_NETWORK_UNREACHABLE:return "NET-UNREACH";
+        case SOCKS5_REP_TTL_EXPIRED:        return "TTL-EXPIRED";
+        case SOCKS5_REP_CMD_NOT_SUPPORTED:  return "CMD-NOT-SUPPORTED";
+        default:                            return "GENERAL-FAILURE";
+    }
+}
+
+/* Anexa un registro de acceso para este CONNECT. No-op si el log no está
+ * inyectado. El usuario es el autenticado (o "-" si fue anónimo); se neutralizan
+ * bytes no imprimibles y espacios para que la línea siga siendo parseable. */
+static void socks5_log_access(struct socks5_conn *c, const char *result)
+{
+    if (access_log == NULL) {
+        return;
+    }
+    char user[USERS_NAME_MAX + 1];
+    if (c->method == SOCKS5_METHOD_USERPASS && c->auth.ulen > 0) {
+        size_t n = c->auth.ulen;
+        if (n > USERS_NAME_MAX) {
+            n = USERS_NAME_MAX;
+        }
+        for (size_t i = 0; i < n; i++) {
+            uint8_t ch = c->auth.uname[i];
+            user[i] = (ch > 0x20 && ch < 0x7f) ? (char)ch : '?';
+        }
+        user[n] = '\0';
+    } else {
+        user[0] = '-';
+        user[1] = '\0';
+    }
+    char dst[300];
+    format_request_dst(dst, sizeof(dst), &c->request);
+    access_log_record(access_log, user, dst, result);
 }
 
 /* Encola la respuesta de error del request (RFC 1928 §6) y pasa a escribirla
@@ -743,6 +816,11 @@ static unsigned request_fail(struct selector_key *key, uint8_t rep)
 {
     struct socks5_conn *c = key->data;
     c->connected = false;
+    /* Registrar sólo si el request llegó a parsearse (hay destino válido); un
+     * error de parseo no representa un acceso a un destino conocido. */
+    if (request_done(&c->request)) {
+        socks5_log_access(c, result_token(rep));
+    }
     fill_request_reply(&c->write_buffer, rep, SOCKS5_ATYP_IPV4);
     if (c->origin_fd != -1) {
         int ofd = c->origin_fd;
@@ -884,6 +962,7 @@ static unsigned request_connect_success(struct selector_key *key)
                                  (const struct sockaddr *)&local)) {
         return request_fail(key, SOCKS5_REP_GENERAL_FAILURE);
     }
+    socks5_log_access(c, "OK");
     if (selector_set_interest(key->s, c->origin_fd, OP_NOOP) != SELECTOR_SUCCESS) {
         return ERROR;
     }
@@ -1086,9 +1165,9 @@ static unsigned relay_read(struct selector_key *key)
     if (n > 0) {
         buffer_write_adv(dst, n);
         if (from_client) {
-            metrics_bytes_client_to_origin((size_t) n);
+            metrics_bytes_client_to_origin(metrics, (size_t) n);
         } else {
-            metrics_bytes_origin_to_client((size_t) n);
+            metrics_bytes_origin_to_client(metrics, (size_t) n);
         }
         return relay_update(c);
     }
@@ -1259,7 +1338,7 @@ void socks5_reap_idle(fd_selector s)
         }
 
         const time_t timeout = (st == RELAY) ? SOCKS5_RELAY_IDLE_TIMEOUT
-                                             : SOCKS5_INACTIVITY_TIMEOUT;
+                                             : (time_t)effective_conn_timeout();
         if (now - c->last_activity < timeout) {
             c = nxt;
             continue;
@@ -1374,6 +1453,15 @@ void socks5_passive_accept(struct selector_key *key)
     if (client < 0) {
         return;
     }
+
+    /* Tope blando de conexiones concurrentes: si ya se alcanzó, rechazar la nueva
+     * sin registrarla. */
+    if (config != NULL && metrics != NULL &&
+        metrics->active_connections >= config_max_connections(config)) {
+        close(client);
+        return;
+    }
+
     if (selector_fd_set_nio(client) < 0) {
         close(client);
         return;
@@ -1384,8 +1472,20 @@ void socks5_passive_accept(struct selector_key *key)
         close(client);
         return;
     }
-    buffer_init(&conn->read_buffer, sizeof(conn->raw_read), conn->raw_read);
-    buffer_init(&conn->write_buffer, sizeof(conn->raw_write), conn->raw_write);
+
+    /* Buffers de relay en el heap, con el tamaño vigente (io_buffer_size). */
+    const size_t bufsize = effective_io_buffer_size();
+    conn->raw_read  = malloc(bufsize);
+    conn->raw_write = malloc(bufsize);
+    if (conn->raw_read == NULL || conn->raw_write == NULL) {
+        free(conn->raw_read);
+        free(conn->raw_write);
+        free(conn);
+        close(client);
+        return;
+    }
+    buffer_init(&conn->read_buffer, bufsize, conn->raw_read);
+    buffer_init(&conn->write_buffer, bufsize, conn->raw_write);
 
     conn->selector   = key->s;
     conn->client_fd  = client;
@@ -1399,12 +1499,13 @@ void socks5_passive_accept(struct selector_key *key)
     stm_init(&conn->stm);
 
     if (selector_register(key->s, client, &socks5_handler, OP_READ, conn) != SELECTOR_SUCCESS) {
+        free(conn->raw_read);
+        free(conn->raw_write);
         free(conn);
         close(client);
         return;
     }
     conn->last_activity = monotonic_now();
     conn_list_push(conn);
-    active_connections++;
-    metrics_connection_opened();
+    metrics_connection_opened(metrics);
 }

@@ -4,8 +4,12 @@
 #include <stdbool.h>
 #include <stddef.h>
 
+#include "access_log.h"
 #include "args.h"
+#include "config.h"
+#include "metrics.h"
 #include "selector.h"
+#include "users.h"
 
 /**
  * socks5.c -- handler de conexión SOCKS5 (RFC 1928) modelado como máquina de
@@ -25,12 +29,34 @@ void
 socks5_passive_accept(struct selector_key *key);
 
 /**
- * Registra los usuarios configurados (-u user:pass) contra los que se validan
- * las credenciales durante la autenticación user/pass (RFC 1929). El arreglo
- * apuntado debe sobrevivir a todas las conexiones (vive en main()).
+ * Inyecta el almacén de usuarios del proxy contra el que se validan las
+ * credenciales durante la autenticación user/pass (RFC 1929). El almacén vive en
+ * main() y puede ser modificado en caliente por el protocolo de monitoreo; debe
+ * sobrevivir a todas las conexiones.
  */
 void
-socks5_set_users(const struct socks5args *args);
+socks5_set_users(struct Users *users);
+
+/**
+ * Inyecta la instancia de métricas del proceso. Debe llamarse antes de aceptar
+ * conexiones. El almacenamiento vive en main() durante toda la ejecución.
+ */
+void
+socks5_set_metrics(struct Metrics *m);
+
+/**
+ * Inyecta el registro de accesos. Si no se llama (o se pasa NULL), los intentos
+ * de CONNECT no se registran. El almacenamiento vive en main().
+ */
+void
+socks5_set_access_log(struct AccessLog *l);
+
+/**
+ * Inyecta la configuración runtime (timeouts, tope de conexiones, tamaño de
+ * buffer). Si no se llama, se usan los defaults de compilación. Vive en main().
+ */
+void
+socks5_set_config(struct Config *cfg);
 
 /** Inicializa el pool acotado de resolución DNS. Es idempotente. */
 bool
