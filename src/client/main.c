@@ -27,7 +27,7 @@ usage(const char *prog)
             "Usage: %s [-v] [-L addr] [-P port] [-a admin:pass]\n"
             "\n"
             "   -L <addr>        Management address (default: %s)\n"
-            "   -P <port>        Management port (default: %u)\n"
+            "   -P <port>        Management port (default: %d)\n"
             "   -a <admin:pass>  Admin credentials\n"
             "   -v               Show SMCP command and raw response status\n"
             "   -h               Show this help\n",
