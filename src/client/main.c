@@ -200,7 +200,6 @@ print_menu(void)
     printf("6: Set config\n");
     printf("7: Logs\n");
     printf("8: Change admin password\n");
-    printf("9: Help\n");
     printf("q: Quit\n");
     fflush(stdout);
 }
@@ -220,7 +219,7 @@ read_menu_choice(int *choice)
     char *end = NULL;
     errno = 0;
     long v = strtol(input, &end, 10);
-    if (end == input || *end != '\0' || errno == ERANGE || v < 0 || v > 9) {
+    if (end == input || *end != '\0' || errno == ERANGE || v < 1 || v > 8) {
         fprintf(stderr, "invalid option\n");
         return false;
     }
@@ -276,8 +275,6 @@ run_choice(int fd, int choice, bool verbose)
         case 8:
             return read_token_prompt("new admin password: ", a, sizeof(a)) &&
                    smcp_cmd_passwd(fd, a, verbose, stdout, stderr);
-        case 9:
-            return smcp_cmd_help(fd, verbose, stdout, stderr);
         case 'q':
             return smcp_cmd_quit(fd, verbose, stdout, stderr);
         default:
@@ -326,7 +323,7 @@ main(const int argc, char **argv)
             continue;
         }
         bool ok = run_choice(fd, choice, args.verbose);
-        if (choice == 'q' || choice == 0) {
+        if (choice == 'q') {
             close(fd);
             return ok ? 0 : 1;
         }
