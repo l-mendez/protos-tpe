@@ -52,7 +52,7 @@ version(void)
 }
 
 static void
-usage(const char* progname, uint32_t users)
+usage(const char* progname, unsigned int users)
 {
     fprintf(stderr,
             "Usage: %s [OPTION]...\n"
