@@ -1,5 +1,6 @@
 # TODO
 
+- [ ] hacer las correcciones de la pre-entrega
 - [ ] ver de hacer todos los modulos adts por consistencia y porque extraño pi
 - [ ] hacer un adt `arg_parser` para reutilizarlo en el cliente y en el servidor, podemos mantener el `arg.c` pero que este llame al parser por atras (agrega mas codigo boiler plate pero me parece mejor para modularizar)
 - [ ] ver si tiene sentido el comando help del client o sacarlo
