@@ -1149,6 +1149,31 @@ static void relay_init(const unsigned state, struct selector_key *key)
     }
 }
 
+static unsigned relay_flush(struct socks5_conn *c, bool to_client)
+{
+    /* Escritura al cliente drena write_buffer (o->c); escritura al origen drena
+     * read_buffer (c->o). */
+    struct buffer *src = to_client ? &c->write_buffer : &c->read_buffer;
+    int fd = to_client ? c->client_fd : c->origin_fd;
+
+    while (buffer_can_read(src)) {
+        size_t   pending;
+        uint8_t *ptr = buffer_read_ptr(src, &pending);
+        ssize_t  n   = send(fd, ptr, pending, MSG_NOSIGNAL);
+
+        if (n > 0) {
+            buffer_read_adv(src, n);
+        } else if (n < 0 && would_block(errno)) {
+            return RELAY;
+        } else if (n == 0) {
+            return RELAY;
+        } else {
+            return ERROR;
+        }
+    }
+    return RELAY;
+}
+
 static unsigned relay_read(struct selector_key *key)
 {
     struct socks5_conn *c = key->data;
@@ -1168,6 +1193,10 @@ static unsigned relay_read(struct selector_key *key)
             metrics_bytes_client_to_origin(metrics, (size_t) n);
         } else {
             metrics_bytes_origin_to_client(metrics, (size_t) n);
+        }
+        unsigned st = relay_flush(c, !from_client);
+        if (st == ERROR) {
+            return ERROR;
         }
         return relay_update(c);
     }
@@ -1191,25 +1220,11 @@ static unsigned relay_write(struct selector_key *key)
     struct socks5_conn *c = key->data;
     bool to_client = (key->fd == c->client_fd);
 
-    /* Elegir el buffer fuente: escritura al cliente drena write_buffer (o→c),
-     * escritura al origen drena read_buffer (c→o). */
-    struct buffer *src = to_client ? &c->write_buffer : &c->read_buffer;
-
-    size_t   pending;
-    uint8_t *ptr = buffer_read_ptr(src, &pending);
-    ssize_t  n   = send(key->fd, ptr, pending, MSG_NOSIGNAL);
-
-    if (n > 0) {
-        buffer_read_adv(src, n);
-        return relay_update(c);
+    unsigned st = relay_flush(c, to_client);
+    if (st == ERROR) {
+        return ERROR;
     }
-    if (n < 0 && would_block(errno)) {
-        return RELAY;
-    }
-    if (n == 0) {
-        return RELAY;
-    }
-    return ERROR;
+    return relay_update(c);
 }
 
 /* ---------------------------------------------------------------- stm tables */
