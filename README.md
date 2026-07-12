@@ -42,6 +42,8 @@ Los objetos intermedios se generan bajo `obj/`.
 | `-L <dirección>`    | dirección de escucha del servicio de management                   | `127.0.0.1`   |
 | `-P <puerto>`       | puerto de escucha del servicio de management                      | `8080`        |
 | `-u <usr>:<pass>`   | credencial habilitada para el proxy (hasta 10 veces)              | —             |
+| `-a <usr>:<pass>`   | credencial del administrador para el servicio de management        | —             |
+| `-o <path>`         | archivo persistente del registro de accesos                       | `access.log`  |
 | `-h`                | imprime la ayuda y termina                                        | —             |
 | `-v`                | imprime la versión y termina                                      | —             |
 

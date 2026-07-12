@@ -123,6 +123,26 @@ START_TEST(test_line_too_long_then_recovers)
 }
 END_TEST
 
+START_TEST(test_line_invalid_then_recovers)
+{
+    struct mgmt_parser p;
+    mgmt_parser_init(&p);
+    uint8_t raw[128];
+    buffer  b;
+    buffer_init(&b, sizeof(raw), raw);
+
+    /* un byte de control (0x01) fuera de ASCII imprimible invalida la línea */
+    put(&b, "MET\x01RICS\n");
+    ck_assert_int_eq(MGMT_LINE_INVALID, mgmt_parser_feed(&p, &b));
+
+    /* tras resetear, la próxima línea se parsea normalmente */
+    mgmt_parser_reset(&p);
+    put(&b, "METRICS\n");
+    ck_assert_int_eq(MGMT_LINE_READY, mgmt_parser_feed(&p, &b));
+    ck_assert_str_eq("METRICS", p.line);
+}
+END_TEST
+
 /* ------------------------------------------------------------ tokenize */
 
 START_TEST(test_tokenize_basic)
@@ -184,6 +204,7 @@ Suite *suite(void)
     tcase_add_test(tc, test_line_partial_then_complete);
     tcase_add_test(tc, test_line_pipelined);
     tcase_add_test(tc, test_line_too_long_then_recovers);
+    tcase_add_test(tc, test_line_invalid_then_recovers);
     tcase_add_test(tc, test_tokenize_basic);
     tcase_add_test(tc, test_tokenize_single_and_empty);
     tcase_add_test(tc, test_tokenize_collapses_spaces);

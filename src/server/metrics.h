@@ -15,8 +15,6 @@
  * único que toca las conexiones), por lo que no hay concurrencia y no se
  * necesitan atómicos ni locks. El pool de resolución DNS corre en otros hilos
  * pero jamás llama acá.
- *
- * El protocolo de monitoreo lee una foto consistente vía metrics_get().
  */
 struct Metrics {
     uint64_t historical_connections;     /* conexiones aceptadas desde el arranque */

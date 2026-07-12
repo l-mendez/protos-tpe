@@ -80,7 +80,7 @@ Cada grupo DEBE entregar todo el material necesario para poder reproducir el Tra
    No es necesario que el informe describa detalles de la consigna o el protocolo SOCKS v5, enfóquense en el trabajo que realizaron ustedes. Sí es necesario que describan el protocolo de monitoreo que diseñaron en “estilo RFC”. Esto es, la descripción del protocolo debe ser agnóstica a un lenguaje de programación, y esta debe contener todos los detalles necesarios para que el lector pueda implementarlo. Expliquen qué decisiones de diseño tomaron (transporte, texto o binario, serialización de estructuras, etc) y justifiquen donde sea relevante.
 
 2. Códigos fuente y archivos de construcción
-   
+
 3. Un archivo README en la raíz que describa al menos:
    1. la ubicación de todos los materiales previamente enumerados
    2. El procedimiento necesario para generar una versión ejecutable de las aplicaciones

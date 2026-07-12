@@ -131,6 +131,20 @@ estado = ("+OK" / "-ERR") [ SP texto ] LF
 
 En las descripciones, `<x>` es un argumento obligatorio y `[x]` uno opcional.
 
+| Comando | Estado requerido | Descripción |
+|---------|------------------|-------------|
+| `AUTH <usuario> <contraseña>` | `NO_AUTH` | Autentica al administrador y habilita los comandos privilegiados de la sesión. |
+| `METRICS` | `AUTH` | Devuelve métricas actuales del proxy, como conexiones activas, histórico de conexiones, bytes transferidos y cantidad de usuarios. |
+| `LIST-USERS` | `AUTH` | Lista los nombres de usuarios habilitados para autenticarse contra el proxy SOCKS5. |
+| `ADD-USER <usuario> <contraseña>` | `AUTH` | Agrega una credencial de usuario del proxy, efectiva para nuevas conexiones SOCKS5. |
+| `DEL-USER <usuario>` | `AUTH` | Elimina una credencial de usuario del proxy sin cerrar conexiones ya establecidas. |
+| `GET-CONFIG` | `AUTH` | Devuelve los parámetros de configuración modificables en tiempo de ejecución. |
+| `SET <clave> <valor>` | `AUTH` | Modifica un parámetro de configuración válido, respetando el rango definido para esa clave. |
+| `LOG [n]` | `AUTH` | Devuelve los últimos registros de acceso, del más reciente al más antiguo. |
+| `PASSWD <nueva-contraseña>` | `AUTH` | Cambia la contraseña del administrador para nuevas sesiones. |
+| `HELP` | cualquiera | Devuelve la lista de comandos disponibles. |
+| `QUIT` | cualquiera | Cierra la sesión SMCP de forma ordenada. |
+
 ### 4.1. AUTH — autenticación
 
 ```

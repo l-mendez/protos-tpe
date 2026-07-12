@@ -348,8 +348,10 @@ static void process_input_lines(struct mgmt_conn *c)
             if (mgmt_handle_line(&c->session, c->parser.line, &c->write_buffer)) {
                 c->close_after_write = true;
             }
-        } else {
+        } else if (st == MGMT_LINE_TOO_LONG) {
             out_printf(&c->write_buffer, "-ERR line too long\n");
+        } else {
+            out_printf(&c->write_buffer, "-ERR invalid\n");
         }
         mgmt_parser_reset(&c->parser);
         if (c->close_after_write) {

@@ -34,12 +34,14 @@ typedef enum {
     MGMT_LINE_INCOMPLETE = 0, /* falta más entrada para completar la línea */
     MGMT_LINE_READY,          /* hay una línea completa en `line` */
     MGMT_LINE_TOO_LONG,       /* la línea excedió el máximo; se descartó */
+    MGMT_LINE_INVALID,        /* byte fuera de ASCII imprimible; se descartó */
 } mgmt_line_state;
 
 struct mgmt_parser {
     char   line[MGMT_LINE_MAX]; /* línea acumulada, sin CR/LF, NUL-terminada al completar */
     size_t len;                 /* bytes de contenido acumulados */
     bool   overflow;            /* se excedió el máximo: descartar hasta el LF */
+    bool   invalid;             /* byte no imprimible: descartar hasta el LF */
 };
 
 /** Deja el parser listo para acumular una línea nueva. */

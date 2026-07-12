@@ -958,11 +958,11 @@ static unsigned request_connect_success(struct selector_key *key)
     }
 
     c->connected = true;
-    socks5_log_access(c, "OK");
     if (!fill_request_reply_addr(&c->write_buffer, SOCKS5_REP_SUCCESS,
                                  (const struct sockaddr *)&local)) {
         return request_fail(key, SOCKS5_REP_GENERAL_FAILURE);
     }
+    socks5_log_access(c, "OK");
     if (selector_set_interest(key->s, c->origin_fd, OP_NOOP) != SELECTOR_SUCCESS) {
         return ERROR;
     }

@@ -5,6 +5,7 @@ mgmt_parser_init(struct mgmt_parser *p)
 {
     p->len      = 0;
     p->overflow = false;
+    p->invalid  = false;
     p->line[0]  = '\0';
 }
 
@@ -13,6 +14,7 @@ mgmt_parser_reset(struct mgmt_parser *p)
 {
     p->len      = 0;
     p->overflow = false;
+    p->invalid  = false;
     p->line[0]  = '\0';
 }
 
@@ -26,6 +28,9 @@ mgmt_parser_feed(struct mgmt_parser *p, buffer *b)
             if (p->overflow) {
                 return MGMT_LINE_TOO_LONG;
             }
+            if (p->invalid) {
+                return MGMT_LINE_INVALID;
+            }
             /* tolerar un CR previo al LF */
             if (p->len > 0 && p->line[p->len - 1] == '\r') {
                 p->len--;
@@ -34,8 +39,14 @@ mgmt_parser_feed(struct mgmt_parser *p, buffer *b)
             return MGMT_LINE_READY;
         }
 
-        if (p->overflow) {
+        if (p->overflow || p->invalid) {
             continue; /* descartar hasta el LF */
+        }
+        /* Sólo se admite ASCII imprimible (0x20-0x7E); un CR se tolera por si
+         * antecede al LF (se descarta más arriba). */
+        if (c != '\r' && (c < 0x20 || c > 0x7e)) {
+            p->invalid = true; /* byte no imprimible: descartar el resto */
+            continue;
         }
         if (p->len >= MGMT_LINE_MAX - 1) {
             p->overflow = true; /* excede el máximo: descartar el resto */
