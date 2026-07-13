@@ -1,4 +1,4 @@
-FROM debian:bookworm-slim
+FROM agodio/itba-so-multi-platform:3.0
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \

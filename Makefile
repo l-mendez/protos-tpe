@@ -3,11 +3,13 @@ include ./Makefile.inc
 SERVER_SOURCES=$(wildcard src/server/*.c)
 CLIENT_SOURCES=$(wildcard src/client/*.c)
 SHARED_SOURCES=$(wildcard src/shared/*.c)
+STRESS_SOURCES=$(wildcard stress/*.c)
 TEST_SOURCES=$(wildcard test/*_test.c)
 
 SERVER_OBJECTS=$(SERVER_SOURCES:src/%.c=obj/%.o)
 CLIENT_OBJECTS=$(CLIENT_SOURCES:src/%.c=obj/%.o)
 SHARED_OBJECTS=$(SHARED_SOURCES:src/%.c=obj/%.o)
+STRESS_OBJECTS=$(STRESS_SOURCES:stress/%.c=obj/stress/%.o)
 
 BIN=bin
 OBJ=obj
@@ -15,9 +17,10 @@ OBJ=obj
 SERVER_BIN=$(BIN)/server
 CLIENT_BIN=$(BIN)/client
 SHARED_LIB=$(OBJ)/libshared.a
+STRESS_BIN=$(BIN)/test/stress
 TEST_BINS=$(TEST_SOURCES:test/%.c=$(BIN)/test/%)
 
-.PHONY: all server client test clean
+.PHONY: all server client test stress clean
 
 all: server client
 
@@ -45,14 +48,31 @@ $(SHARED_LIB): $(SHARED_OBJECTS)
 # Some tests #include a server/shared unit directly to reach its statics. Make
 # can't see those includes, so depend on every source and header to rebuild the
 # test binaries whenever an included unit changes (avoids running stale tests).
-TEST_DEPS=$(wildcard src/server/*.c src/client/*.c src/shared/*.c src/server/include/*.h src/client/include/*.h src/shared/include/*.h)
+TEST_DEPS=$(wildcard src/server/*.c src/client/*.c src/shared/*.c src/server/include/*.h src/client/include/*.h src/shared/include/*.h stress/*.c stress/*.h)
 
 $(BIN)/test/%: test/%.c $(SHARED_LIB) $(TEST_DEPS)
 	@mkdir -p $(@D)
 	$(COMPILER) $(COMPILER_FLAGS) $(TEST_CFLAGS) $< $(SHARED_LIB) -o $@ $(TEST_LD_FLAGS)
 
+$(OBJ)/stress/%.o: stress/%.c
+	@mkdir -p $(@D)
+	$(COMPILER) $(COMPILER_FLAGS) -Istress -c $< -o $@
+
+$(STRESS_BIN): $(STRESS_OBJECTS)
+	@mkdir -p $(@D)
+	$(COMPILER) $(COMPILER_FLAGS) $^ -o $@ $(LD_FLAGS)
+
 test: $(TEST_BINS)
 	@for t in $(TEST_BINS); do echo "== $$t =="; ./$$t || exit 1; done
+
+stress:
+	@if [ "$$(uname -s)" != "Linux" ]; then \
+		echo "stress requires Linux; enter the Docker environment and run 'make stress'" >&2; \
+		exit 2; \
+	fi
+	$(MAKE) clean
+	$(MAKE) server $(STRESS_BIN)
+	./$(STRESS_BIN)
 
 clean:
 	rm -rf $(BIN) $(OBJ)

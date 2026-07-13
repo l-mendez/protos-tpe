@@ -5,6 +5,16 @@
 #include <check.h>
 
 #include "buffer.h"
+#include "selector.h"
+
+static size_t retry_accept_calls;
+static fd_selector retry_accept_selector;
+
+void socks5_retry_accept(fd_selector s)
+{
+    retry_accept_calls++;
+    retry_accept_selector = s;
+}
 
 /* Unidades de src/server incluidas directamente (como los demás tests). */
 #include "../src/server/users.c"
@@ -336,6 +346,34 @@ START_TEST(test_passwd)
 }
 END_TEST
 
+START_TEST(test_close_retries_paused_socks_listener)
+{
+    int fds[2];
+    ck_assert_int_eq(socketpair(AF_UNIX, SOCK_STREAM, 0, fds), 0);
+
+    struct mgmt_conn *conn = calloc(1, sizeof(*conn));
+    ck_assert_ptr_nonnull(conn);
+    conn->fd = fds[0];
+
+    struct selector_key key = {
+        .s = NULL,
+        .fd = fds[0],
+        .data = conn,
+    };
+    key.s = (fd_selector)&key;
+    active_mgmt_connections = 1;
+    retry_accept_calls = 0;
+    retry_accept_selector = NULL;
+
+    mgmt_close(&key);
+
+    ck_assert_uint_eq(1, retry_accept_calls);
+    ck_assert_ptr_eq(key.s, retry_accept_selector);
+    ck_assert_uint_eq(0, active_mgmt_connections);
+    close(fds[1]);
+}
+END_TEST
+
 Suite *suite(void)
 {
     Suite *s  = suite_create("mgmt");
@@ -354,6 +392,7 @@ Suite *suite(void)
     tcase_add_test(tc, test_get_and_set_config);
     tcase_add_test(tc, test_log);
     tcase_add_test(tc, test_passwd);
+    tcase_add_test(tc, test_close_retries_paused_socks_listener);
     suite_add_tcase(s, tc);
     return s;
 }

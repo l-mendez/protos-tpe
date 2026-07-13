@@ -1466,6 +1466,58 @@ START_TEST(test_socks5_resolver_pool_rejects_when_capacity_is_exhausted)
 }
 END_TEST
 
+static bool retry_listener_read_called;
+
+static void retry_listener_read(struct selector_key *key)
+{
+    (void)key;
+    retry_listener_read_called = true;
+}
+
+START_TEST(test_retry_accept_rearms_paused_listener)
+{
+    struct selector_init conf = {
+        .signal         = SIGALRM,
+        .select_timeout = { .tv_sec = 0, .tv_nsec = 50000000 },
+    };
+    ck_assert_int_eq(selector_init(&conf), SELECTOR_SUCCESS);
+    fd_selector s = selector_new(64);
+    ck_assert_ptr_nonnull(s);
+
+    int fds[2];
+    ck_assert_int_eq(socketpair(AF_UNIX, SOCK_STREAM, 0, fds), 0);
+    static const fd_handler listener_handler = { .handle_read = retry_listener_read };
+    ck_assert_int_eq(selector_register(s, fds[0], &listener_handler, OP_NOOP, NULL),
+                     SELECTOR_SUCCESS);
+    accept_paused_fd = fds[0];
+    retry_listener_read_called = false;
+
+    socks5_retry_accept(s);
+
+    ck_assert_int_eq(-1, accept_paused_fd);
+    ck_assert_int_eq(write(fds[1], "x", 1), 1);
+    ck_assert_int_eq(selector_select(s), SELECTOR_SUCCESS);
+    ck_assert(retry_listener_read_called);
+    ck_assert_int_eq(selector_unregister_fd(s, fds[0]), SELECTOR_SUCCESS);
+    close(fds[0]);
+    close(fds[1]);
+    selector_destroy(s);
+    selector_close();
+}
+END_TEST
+
+START_TEST(test_forget_paused_listener_prevents_stale_fd_reuse)
+{
+    accept_paused_fd = 17;
+
+    socks5_forget_paused_listener(18);
+    ck_assert_int_eq(17, accept_paused_fd);
+
+    socks5_forget_paused_listener(17);
+    ck_assert_int_eq(-1, accept_paused_fd);
+}
+END_TEST
+
 START_TEST(test_socks5_rejects_domain_with_embedded_nul)
 {
     socks5_set_users(&no_users);
@@ -1681,6 +1733,8 @@ static Suite *socks5_suite(void)
     tcase_add_test(tc, test_socks5_reap_req_write_with_origin_fd);
     tcase_add_test(tc, test_socks5_relay_compacts_partial_drain_before_interest_update);
     tcase_add_test(tc, test_socks5_resolver_pool_rejects_when_capacity_is_exhausted);
+    tcase_add_test(tc, test_retry_accept_rearms_paused_listener);
+    tcase_add_test(tc, test_forget_paused_listener_prevents_stale_fd_reuse);
     tcase_add_test(tc, test_socks5_rejects_domain_with_embedded_nul);
     tcase_add_test(tc, test_socks5_close_cancels_pending_resolver_reference);
     tcase_add_test(tc, test_socks5_resolver_job_captures_notify_target);
