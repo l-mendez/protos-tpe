@@ -6,6 +6,7 @@
 #include "runner_support.h"
 #include "smcp_probe.h"
 #include "stress_config.h"
+#include "stress_helpers.h"
 
 #include <arpa/inet.h>
 #include <errno.h>
@@ -43,13 +44,6 @@ static void stop_handler(int signal)
 {
     (void)signal;
     stop_requested = 1;
-}
-
-static double monotonic_seconds(void)
-{
-    struct timespec now;
-    clock_gettime(CLOCK_MONOTONIC, &now);
-    return (double)now.tv_sec + (double)now.tv_nsec / 1000000000.0;
 }
 
 static void sleep_milliseconds(unsigned milliseconds)
@@ -120,13 +114,13 @@ static int open_log(const char *directory, const char *name)
 
 static bool wait_process(pid_t pid, unsigned seconds, int *status)
 {
-    double deadline = monotonic_seconds() + seconds;
+    double deadline = stress_monotonic_seconds() + seconds;
     for (;;) {
         pid_t result = waitpid(pid, status, WNOHANG);
         if (result == pid) return true;
         if (result < 0 && errno == ECHILD) return true;
         if (result < 0 && errno != EINTR) return false;
-        if (monotonic_seconds() >= deadline) return false;
+        if (stress_monotonic_seconds() >= deadline) return false;
         sleep_milliseconds(50);
     }
 }
@@ -163,8 +157,8 @@ static void cleanup_processes(struct stress_processes *processes)
 
 static bool wait_server_ready(struct stress_processes *processes)
 {
-    double deadline = monotonic_seconds() + 5.0;
-    while (!stop_requested && monotonic_seconds() < deadline) {
+    double deadline = stress_monotonic_seconds() + 5.0;
+    while (!stop_requested && stress_monotonic_seconds() < deadline) {
         int status;
         if (waitpid(processes->server_pid, &status, WNOHANG) == processes->server_pid) {
             processes->server_pid = -1;
@@ -199,11 +193,18 @@ static bool start_environment(struct stress_processes *processes,
         .control_fd = -1,
     };
     int echo_listener = stress_echo_create(&processes->echo_port);
-    if (echo_listener < 0 || reserve_port(&processes->proxy_port) < 0 ||
-        reserve_port(&processes->management_port) < 0) {
+    if (echo_listener < 0 || reserve_port(&processes->proxy_port) < 0) {
         if (echo_listener >= 0) close(echo_listener);
         return false;
     }
+    /* Evitar que el asignador efímero devuelva el mismo puerto para proxy y
+     * management (el segundo bind() fallaría EADDRINUSE y no arrancaría). */
+    do {
+        if (reserve_port(&processes->management_port) < 0) {
+            close(echo_listener);
+            return false;
+        }
+    } while (processes->management_port == processes->proxy_port);
     processes->echo_pid = fork();
     if (processes->echo_pid == 0) {
         int log = open_log(result_directory, "echo.log");
@@ -247,10 +248,10 @@ static bool start_environment(struct stress_processes *processes,
 static bool read_event(int fd, struct stress_load_event *event, int timeout_ms)
 {
     struct pollfd pollfd = {.fd = fd, .events = POLLIN};
-    double deadline = monotonic_seconds() + (double)timeout_ms / 1000.0;
+    double deadline = stress_monotonic_seconds() + (double)timeout_ms / 1000.0;
     int ready;
     do {
-        double remaining = deadline - monotonic_seconds();
+        double remaining = deadline - stress_monotonic_seconds();
         if (remaining <= 0.0) return false;
         int wait_ms = (int)(remaining * 1000.0);
         if (wait_ms < 1) wait_ms = 1;
@@ -334,13 +335,13 @@ static bool finish_load(struct stress_processes *processes, int expected_status)
 
 static bool wait_active_zero(uint16_t management_port)
 {
-    double deadline = monotonic_seconds() + 5.0;
+    double deadline = stress_monotonic_seconds() + 5.0;
     do {
         struct stress_metrics metrics;
         if (stress_smcp_query_metrics(management_port, &metrics) &&
             metrics.active_connections == 0) return true;
         sleep_milliseconds(50);
-    } while (!stop_requested && monotonic_seconds() < deadline);
+    } while (!stop_requested && stress_monotonic_seconds() < deadline);
     return false;
 }
 
@@ -363,8 +364,8 @@ static bool run_capacity_probe(size_t concurrency, unsigned hold_seconds,
              metrics.max_active_connections >= concurrency;
     }
     if (connected != NULL) *connected = ready.connected;
-    double hold_until = monotonic_seconds() + hold_seconds;
-    while (ok && !stop_requested && monotonic_seconds() < hold_until) {
+    double hold_until = stress_monotonic_seconds() + hold_seconds;
+    while (ok && !stop_requested && stress_monotonic_seconds() < hold_until) {
         sleep_milliseconds(100);
     }
     if (processes.control_fd >= 0) {
@@ -435,9 +436,9 @@ static bool run_throughput_once(size_t concurrency, unsigned repetition,
     bool ok = start_environment(&processes, directory) &&
               start_load(&processes, STRESS_LOAD_THROUGHPUT, concurrency,
                          STRESS_THROUGHPUT_BYTES, 0, directory);
-    double deadline = monotonic_seconds() + STRESS_RUN_TIMEOUT_SECONDS;
-    while (ok && monotonic_seconds() < deadline) {
-        double remaining = deadline - monotonic_seconds();
+    double deadline = stress_monotonic_seconds() + STRESS_RUN_TIMEOUT_SECONDS;
+    while (ok && stress_monotonic_seconds() < deadline) {
+        double remaining = deadline - stress_monotonic_seconds();
         int timeout_ms = (int)(remaining * 1000.0);
         if (timeout_ms < 1 || !read_event(processes.event_fd, &event, timeout_ms)) break;
         if (event.type == STRESS_LOAD_DONE) {
@@ -542,8 +543,8 @@ static bool run_soak(struct stress_results *results, const char *directory)
         ok = sample_resources(processes.server_pid, &rss, &start_ticks);
         results->soak_rss_start_kib = results->soak_rss_max_kib = rss;
     }
-    double deadline = monotonic_seconds() + STRESS_SOAK_SECONDS + 10u;
-    while (ok && !stop_requested && monotonic_seconds() < deadline) {
+    double deadline = stress_monotonic_seconds() + STRESS_SOAK_SECONDS + 10u;
+    while (ok && !stop_requested && stress_monotonic_seconds() < deadline) {
         struct stress_load_event event;
         if (read_event(processes.event_fd, &event, 1000)) {
             if (event.type == STRESS_LOAD_DONE) {
@@ -617,8 +618,17 @@ int stress_run_all(void)
     snprintf(results.system, sizeof(results.system), "%s %s %s", system.sysname,
              system.release, system.machine);
     struct rlimit files;
-    if (getrlimit(RLIMIT_NOFILE, &files) == 0)
+    if (getrlimit(RLIMIT_NOFILE, &files) == 0) {
+        /* 500 túneles IPv4 ≈ 1006-1008 fds del servidor, apenas bajo el límite
+         * blando por defecto (1024): elevar rlim_cur a rlim_max de forma defensiva
+         * antes de forkear para que el gate de 500 conexiones no falle espuriamente. */
+        if (files.rlim_cur < files.rlim_max) {
+            files.rlim_cur = files.rlim_max;
+            (void)setrlimit(RLIMIT_NOFILE, &files);
+            (void)getrlimit(RLIMIT_NOFILE, &files);
+        }
         results.open_file_limit = (unsigned long)files.rlim_cur;
+    }
     char directory[PATH_MAX];
     if (!create_result_directory(directory, sizeof(directory), &results)) {
         perror("stress results directory");

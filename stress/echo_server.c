@@ -1,10 +1,10 @@
 #include "echo_server.h"
 
 #include "stress_config.h"
+#include "stress_helpers.h"
 
 #include <arpa/inet.h>
 #include <errno.h>
-#include <fcntl.h>
 #include <poll.h>
 #include <signal.h>
 #include <stdbool.h>
@@ -27,12 +27,6 @@ static void echo_signal(int signal)
     echo_stop = 1;
 }
 
-static int set_nonblocking(int fd)
-{
-    int flags = fcntl(fd, F_GETFL, 0);
-    return flags < 0 ? -1 : fcntl(fd, F_SETFL, flags | O_NONBLOCK);
-}
-
 int stress_echo_create(uint16_t *port_out)
 {
     int fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -46,7 +40,7 @@ int stress_echo_create(uint16_t *port_out)
         .sin_port = 0,
     };
     if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0 ||
-        listen(fd, SOMAXCONN) < 0 || set_nonblocking(fd) < 0) {
+        listen(fd, SOMAXCONN) < 0 || stress_set_nonblocking(fd) < 0) {
         close(fd);
         return -1;
     }
@@ -99,11 +93,16 @@ int stress_echo_run(int listener_fd)
             for (;;) {
                 int client = accept(listener_fd, NULL, NULL);
                 if (client < 0) {
-                    if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) break;
-                    echo_stop = 1;
+                    /* Cola drenada, o fds agotados: reintentar en el próximo poll
+                     * (spin-safe: procesar conexiones vivas libera descriptores). */
+                    if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR ||
+                        errno == EMFILE || errno == ENFILE) break;
+                    /* Conexión abortada por el peer antes del accept: descartarla. */
+                    if (errno == ECONNABORTED) continue;
+                    echo_stop = 1; /* error genuinamente fatal: detener el backend */
                     break;
                 }
-                if (set_nonblocking(client) < 0) {
+                if (stress_set_nonblocking(client) < 0) {
                     close(client);
                     continue;
                 }

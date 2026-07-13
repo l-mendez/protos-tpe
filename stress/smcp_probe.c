@@ -1,6 +1,7 @@
 #include "smcp_probe.h"
 
 #include "stress_config.h"
+#include "stress_helpers.h"
 
 #include <arpa/inet.h>
 #include <errno.h>
@@ -12,19 +13,7 @@
 
 static bool send_all(int fd, const char *text)
 {
-    size_t left = strlen(text);
-    while (left > 0) {
-        ssize_t n = send(fd, text, left, 0);
-        if (n > 0) {
-            text += n;
-            left -= (size_t)n;
-        } else if (n < 0 && errno == EINTR) {
-            continue;
-        } else {
-            return false;
-        }
-    }
-    return true;
+    return stress_write_full(fd, text, strlen(text));
 }
 
 static bool read_line(int fd, char *dst, size_t cap)

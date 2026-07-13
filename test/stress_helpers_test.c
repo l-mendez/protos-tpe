@@ -80,11 +80,10 @@ START_TEST(test_rejects_incomplete_smcp_metrics_response)
 }
 END_TEST
 
-START_TEST(test_computes_median_and_nearest_rank_percentile)
+START_TEST(test_computes_median)
 {
     double values[] = {5.0, 1.0, 3.0, 2.0, 4.0};
     ck_assert_double_eq_tol(3.0, stress_median(values, 5), 0.0001);
-    ck_assert_double_eq_tol(5.0, stress_percentile(values, 5, 0.95), 0.0001);
 }
 END_TEST
 
@@ -111,7 +110,7 @@ static Suite *stress_helpers_suite(void)
     tcase_add_test(tc, test_validates_socks_replies);
     tcase_add_test(tc, test_parses_complete_smcp_metrics_response);
     tcase_add_test(tc, test_rejects_incomplete_smcp_metrics_response);
-    tcase_add_test(tc, test_computes_median_and_nearest_rank_percentile);
+    tcase_add_test(tc, test_computes_median);
     tcase_add_test(tc, test_json_escape_handles_control_characters);
     suite_add_tcase(s, tc);
     return s;

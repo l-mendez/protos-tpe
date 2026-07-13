@@ -20,9 +20,6 @@ SHARED_LIB=$(OBJ)/libshared.a
 STRESS_BIN=$(BIN)/test/stress
 TEST_BINS=$(TEST_SOURCES:test/%.c=$(BIN)/test/%)
 
-TEMP ?= /tmp
-export TEMP
-
 .PHONY: all server client test stress clean
 
 all: server client

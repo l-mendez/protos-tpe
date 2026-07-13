@@ -26,7 +26,11 @@ bool stress_validate_connect_ipv4(const uint8_t reply[10]);
 
 bool stress_parse_metrics(const char *response, struct stress_metrics *out);
 double stress_median(double *values, size_t count);
-double stress_percentile(double *values, size_t count, double percentile);
 bool stress_json_string(FILE *out, const char *value);
+
+/* Helpers compartidos por los objetos de stress (todos enlazan en un binario). */
+int stress_set_nonblocking(int fd);
+double stress_monotonic_seconds(void);
+bool stress_write_full(int fd, const void *data, size_t len);
 
 #endif

@@ -5,13 +5,11 @@
 
 #include <arpa/inet.h>
 #include <errno.h>
-#include <fcntl.h>
 #include <poll.h>
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
-#include <time.h>
 #include <unistd.h>
 
 enum conn_state {
@@ -49,36 +47,6 @@ struct load_conn {
     bool counted_failed;
 };
 
-static double monotonic_seconds(void)
-{
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (double)ts.tv_sec + (double)ts.tv_nsec / 1000000000.0;
-}
-
-static int set_nonblocking(int fd)
-{
-    int flags = fcntl(fd, F_GETFL, 0);
-    return flags < 0 ? -1 : fcntl(fd, F_SETFL, flags | O_NONBLOCK);
-}
-
-static bool write_full(int fd, const void *data, size_t len)
-{
-    const uint8_t *p = data;
-    while (len > 0) {
-        ssize_t n = write(fd, p, len);
-        if (n > 0) {
-            p += n;
-            len -= (size_t)n;
-        } else if (n < 0 && errno == EINTR) {
-            continue;
-        } else {
-            return false;
-        }
-    }
-    return true;
-}
-
 static void emit_event(const struct stress_load_config *cfg, uint32_t type,
                        size_t connected, size_t failed, size_t corrupted,
                        uint64_t bytes, double seconds)
@@ -92,7 +60,7 @@ static void emit_event(const struct stress_load_config *cfg, uint32_t type,
         .bytes = bytes,
         .seconds = seconds,
     };
-    (void)write_full(cfg->event_fd, &event, sizeof(event));
+    (void)stress_write_full(cfg->event_fd, &event, sizeof(event));
 }
 
 static void fail_conn(struct load_conn *c, size_t *failed)
@@ -139,7 +107,7 @@ static void prepare_payload(struct load_conn *c, size_t size)
 static bool begin_connection(struct load_conn *c, uint16_t proxy_port)
 {
     c->fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (c->fd < 0 || set_nonblocking(c->fd) < 0) {
+    if (c->fd < 0 || stress_set_nonblocking(c->fd) < 0) {
         if (c->fd >= 0) close(c->fd);
         c->fd = -1;
         return false;
@@ -286,14 +254,14 @@ int stress_load_run(const struct stress_load_config *cfg)
         }
     }
 
-    double setup_start = monotonic_seconds();
+    double setup_start = stress_monotonic_seconds();
     double work_start = 0.0;
     bool workload_started = false;
     bool ready_emitted = false;
     uint64_t total_bytes = 0;
 
     for (;;) {
-        double now = monotonic_seconds();
+        double now = stress_monotonic_seconds();
         if (workload_started && failed > 0) {
             break;
         }
@@ -455,7 +423,7 @@ int stress_load_run(const struct stress_load_config *cfg)
         }
     }
 
-    double seconds = workload_started ? monotonic_seconds() - work_start : 0.0;
+    double seconds = workload_started ? stress_monotonic_seconds() - work_start : 0.0;
     for (size_t i = 0; i < cfg->concurrency; i++) {
         if (conns[i].fd >= 0) close(conns[i].fd);
     }

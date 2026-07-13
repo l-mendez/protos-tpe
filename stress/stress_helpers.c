@@ -1,7 +1,11 @@
 #include "stress_helpers.h"
 
+#include <errno.h>
+#include <fcntl.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
+#include <unistd.h>
 
 int stress_build_negotiation(uint8_t *dst, size_t cap)
 {
@@ -159,20 +163,34 @@ double stress_median(double *values, size_t count)
     return (values[count / 2 - 1] + values[count / 2]) / 2.0;
 }
 
-double stress_percentile(double *values, size_t count, double percentile)
+int stress_set_nonblocking(int fd)
 {
-    if (values == NULL || count == 0 || percentile <= 0.0 || percentile > 1.0) {
-        return 0.0;
+    int flags = fcntl(fd, F_GETFL, 0);
+    return flags < 0 ? -1 : fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+}
+
+double stress_monotonic_seconds(void)
+{
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return (double)now.tv_sec + (double)now.tv_nsec / 1000000000.0;
+}
+
+bool stress_write_full(int fd, const void *data, size_t len)
+{
+    const uint8_t *p = data;
+    while (len > 0) {
+        ssize_t n = write(fd, p, len);
+        if (n > 0) {
+            p += n;
+            len -= (size_t)n;
+        } else if (n < 0 && errno == EINTR) {
+            continue;
+        } else {
+            return false;
+        }
     }
-    qsort(values, count, sizeof(*values), compare_double);
-    size_t rank = (size_t)(percentile * (double)count);
-    if ((double)rank < percentile * (double)count) {
-        rank++;
-    }
-    if (rank == 0) {
-        rank = 1;
-    }
-    return values[rank - 1];
+    return true;
 }
 
 bool stress_json_string(FILE *out, const char *value)
