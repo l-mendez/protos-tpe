@@ -12,10 +12,7 @@ mgmt_parser_init(struct mgmt_parser *p)
 void
 mgmt_parser_reset(struct mgmt_parser *p)
 {
-    p->len      = 0;
-    p->overflow = false;
-    p->invalid  = false;
-    p->line[0]  = '\0';
+    mgmt_parser_init(p);
 }
 
 mgmt_line_state

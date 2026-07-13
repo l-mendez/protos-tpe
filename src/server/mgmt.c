@@ -4,11 +4,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
 #include "mgmt.h"
 #include "mgmt_parser.h"
+#include "netutils.h"
 
 /* Linux evita el SIGPIPE en send() con esta flag; macOS no la define y lo
  * resuelve ignorando SIGPIPE en el arranque, así que aquí degrada a 0. */
@@ -41,11 +43,6 @@ static const fd_handler mgmt_handler = {
     .handle_write = mgmt_write,
     .handle_close = mgmt_close,
 };
-
-static inline int would_block(int err)
-{
-    return err == EAGAIN || err == EWOULDBLOCK || err == EINTR;
-}
 
 /* ------------------------------------------------------------ admin creds */
 
@@ -90,16 +87,10 @@ size_t mgmt_active_connections(void)
 
 /* ------------------------------------------------------------ helpers */
 
-/* Comparación de comando, case-insensitive (ASCII). */
+/* Comparación de comando, case-insensitive. */
 static bool ieq(const char *a, const char *b)
 {
-    for (; *a != '\0' && *b != '\0'; a++, b++) {
-        char ca = *a, cb = *b;
-        if (ca >= 'a' && ca <= 'z') ca -= 32;
-        if (cb >= 'a' && cb <= 'z') cb -= 32;
-        if (ca != cb) return false;
-    }
-    return *a == *b;
+    return strcasecmp(a, b) == 0;
 }
 
 /* Escribe una respuesta formateada en el buffer (acotada a una línea larga). */
