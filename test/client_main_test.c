@@ -30,11 +30,63 @@ START_TEST(test_read_menu_choice_maps_eof_to_quit)
 }
 END_TEST
 
+START_TEST(test_read_prompt_accepts_final_line_without_newline)
+{
+    FILE *input = tmpfile();
+    ck_assert_ptr_nonnull(input);
+    ck_assert_int_ge(fputs("1234567890123456789012345678901", input), 0);
+    rewind(input);
+
+    int saved_stdin = dup(STDIN_FILENO);
+    ck_assert_int_ge(saved_stdin, 0);
+    ck_assert_int_eq(STDIN_FILENO, dup2(fileno(input), STDIN_FILENO));
+    clearerr(stdin);
+
+    char value[32];
+    bool read_ok = read_prompt("", value, sizeof(value), true);
+
+    ck_assert_int_eq(STDIN_FILENO, dup2(saved_stdin, STDIN_FILENO));
+    close(saved_stdin);
+    fclose(input);
+    clearerr(stdin);
+
+    ck_assert(read_ok);
+    ck_assert_str_eq("1234567890123456789012345678901", value);
+}
+END_TEST
+
+START_TEST(test_read_prompt_accepts_max_length_line_with_newline)
+{
+    FILE *input = tmpfile();
+    ck_assert_ptr_nonnull(input);
+    ck_assert_int_ge(fputs("1234567890123456789012345678901\n", input), 0);
+    rewind(input);
+
+    int saved_stdin = dup(STDIN_FILENO);
+    ck_assert_int_ge(saved_stdin, 0);
+    ck_assert_int_eq(STDIN_FILENO, dup2(fileno(input), STDIN_FILENO));
+    clearerr(stdin);
+
+    char value[32];
+    bool read_ok = read_prompt("", value, sizeof(value), true);
+
+    ck_assert_int_eq(STDIN_FILENO, dup2(saved_stdin, STDIN_FILENO));
+    close(saved_stdin);
+    fclose(input);
+    clearerr(stdin);
+
+    ck_assert(read_ok);
+    ck_assert_str_eq("1234567890123456789012345678901", value);
+}
+END_TEST
+
 static Suite *client_main_suite(void)
 {
     Suite *s = suite_create("client_main");
     TCase *tc = tcase_create("input");
     tcase_add_test(tc, test_read_menu_choice_maps_eof_to_quit);
+    tcase_add_test(tc, test_read_prompt_accepts_final_line_without_newline);
+    tcase_add_test(tc, test_read_prompt_accepts_max_length_line_with_newline);
     suite_add_tcase(s, tc);
     return s;
 }

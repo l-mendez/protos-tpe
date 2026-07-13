@@ -13,6 +13,9 @@
 extern const char *
 sockaddr_to_human(char *buff, const size_t buffsize,
                   const struct sockaddr *addr) {
+    if(buff == NULL || buffsize == 0) {
+        return buff;
+    }
     if(addr == 0) {
         strncpy(buff, "null", buffsize);
         return buff;
@@ -32,9 +35,12 @@ sockaddr_to_human(char *buff, const size_t buffsize,
         strncpy(buff, "unknown", buffsize);
     }
 
-    strncat(buff, ":", buffsize);
     buff[buffsize - 1] = 0;
-    const size_t len = strlen(buff);
+    size_t len = strlen(buff);
+    if(len + 1 < buffsize) {
+        buff[len++] = ':';
+        buff[len] = '\0';
+    }
 
     if(handled) {
         snprintf(buff + len, buffsize - len, "%u", port);

@@ -233,7 +233,7 @@ Ver Sección 6.
 +OK 3
 conn_timeout 60
 io_buffer_size 4096
-max_connections 1024
+max_connections 500
 ```
 
 ### 4.7. SET — modificar configuración
@@ -326,9 +326,10 @@ Claves aceptadas por `SET`/`GET-CONFIG`:
 
 Notas de semántica:
 
-- `max_connections` sólo puede **reducirse** por debajo del límite duro con el
-  que se creó el multiplexor; no puede aumentarse por encima de él. Al reducirlo,
-  las conexiones existentes NO se cierran; sólo se rechazan nuevas por encima del
+- `max_connections` sólo puede **reducirse** por debajo del límite duro derivado
+  de la capacidad del multiplexor. El cálculo contempla dos descriptores por
+  túnel y reserva espacio para listeners y management. Al reducirlo, las
+  conexiones existentes NO se cierran; sólo se rechazan nuevas por encima del
   tope.
 - `io_buffer_size` NO DEBE alterar los buffers de conexiones ya establecidas.
 

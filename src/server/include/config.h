@@ -25,15 +25,16 @@ struct Config {
     uint32_t conn_timeout;         /* inactividad (s) antes de cerrar SOCKS5 */
     uint32_t io_buffer_size;       /* buffer de relay por conexión nueva (bytes) */
     uint32_t max_connections;      /* tope blando de conexiones concurrentes */
-    uint32_t max_connections_hard; /* techo: capacidad del selector, no superable */
+    uint32_t max_connections_hard; /* techo alcanzable dentro del presupuesto de fds */
 };
 
 /**
- * Inicializa con los defaults. `max_connections` arranca en el techo
- * `max_connections_hard` (la capacidad con la que se creó el multiplexor).
+ * Inicializa con los defaults. El techo de conexiones se deriva de la capacidad
+ * de fds del selector, considerando que cada relay usa dos fds y reservando
+ * espacio para listeners, management y descriptores del proceso.
  */
 void
-config_init(struct Config *c, uint32_t max_connections_hard);
+config_init(struct Config *c, uint32_t selector_fd_capacity);
 
 uint32_t config_conn_timeout(const struct Config *c);
 uint32_t config_io_buffer_size(const struct Config *c);

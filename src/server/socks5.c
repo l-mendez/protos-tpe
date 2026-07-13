@@ -185,6 +185,44 @@ static int fill_read_buffer(struct selector_key *key, struct buffer *b)
     return ERROR; /* n == 0 (cierre del par) o error real */
 }
 
+typedef int (*parser_feed_fn)(struct socks5_conn *c, struct buffer *b);
+
+static int feed_negotiation(struct socks5_conn *c, struct buffer *b)
+{
+    return negotiation_parser_feed(&c->neg, b);
+}
+
+static int feed_auth(struct socks5_conn *c, struct buffer *b)
+{
+    return auth_parser_feed(&c->auth, b);
+}
+
+static int feed_request(struct socks5_conn *c, struct buffer *b)
+{
+    return request_parser_feed(&c->request, b);
+}
+
+/* Alimenta primero los bytes ya bufferizados y sólo lee del socket si el
+ * parser todavía necesita datos. Devuelve false cuando la lectura cerró o
+ * falló, dejando en state el estado terminal de la conexión. */
+static bool feed_parser(struct selector_key *key, parser_feed_fn feed,
+                        int done, int invalid, int *state)
+{
+    struct socks5_conn *c = key->data;
+    *state = feed(c, &c->read_buffer);
+    if (*state == done || *state == invalid) {
+        return true;
+    }
+
+    int closed = fill_read_buffer(key, &c->read_buffer);
+    if (closed != -1) {
+        *state = closed;
+        return false;
+    }
+    *state = feed(c, &c->read_buffer);
+    return true;
+}
+
 /* --------------------------------------------------------- negotiation phase */
 
 static void negotiation_read_init(const unsigned state, struct selector_key *key)
@@ -201,13 +239,9 @@ static unsigned negotiation_read(struct selector_key *key)
     /* Parsear primero lo que ya está en el buffer: si el cliente encadenó varios
      * mensajes en un mismo segmento, esos bytes ya se consumieron del socket y
      * no generarían otro evento de lectura. Sólo se va al socket si hace falta. */
-    neg_state st = negotiation_parser_feed(&c->neg, &c->read_buffer);
-    if (st != NEG_DONE && st != NEG_INVALID) {
-        int closed = fill_read_buffer(key, &c->read_buffer);
-        if (closed != -1) {
-            return (unsigned)closed;
-        }
-        st = negotiation_parser_feed(&c->neg, &c->read_buffer);
+    int st;
+    if (!feed_parser(key, feed_negotiation, NEG_DONE, NEG_INVALID, &st)) {
+        return (unsigned)st;
     }
 
     if (st == NEG_INVALID) {
@@ -265,13 +299,9 @@ static unsigned auth_read(struct selector_key *key)
 {
     struct socks5_conn *c = key->data;
 
-    auth_state st = auth_parser_feed(&c->auth, &c->read_buffer);
-    if (st != AUTH_DONE && st != AUTH_ERROR) {
-        int closed = fill_read_buffer(key, &c->read_buffer);
-        if (closed != -1) {
-            return (unsigned)closed;
-        }
-        st = auth_parser_feed(&c->auth, &c->read_buffer);
+    int st;
+    if (!feed_parser(key, feed_auth, AUTH_DONE, AUTH_ERROR, &st)) {
+        return (unsigned)st;
     }
 
     if (st == AUTH_ERROR) {
@@ -342,28 +372,30 @@ static void sanitize_domain(char *dst, size_t cap, const uint8_t *src, size_t n)
     dst[i] = '\0';
 }
 
-/* Formatea el destino del request como "host:puerto" (para el log de accesos). */
-static void format_request_dst(char *out, size_t cap, const struct socks5_request *r)
+/* Formatea el destino como "host:puerto" y devuelve su tipo para el log. */
+static const char *format_request_dst(char *out, size_t cap,
+                                      const struct socks5_request *r)
 {
+    char host[256] = "?";
+    const char *kind;
+
     if (r->atyp == SOCKS5_ATYP_DOMAIN) {
-        char host[256];
+        kind = "domain";
         sanitize_domain(host, sizeof(host), r->dst_addr, r->addr_len);
-        snprintf(out, cap, "%s:%u", host, r->dst_port);
     } else {
-        char      host[INET6_ADDRSTRLEN] = "?";
-        const int af = (r->atyp == SOCKS5_ATYP_IPV6) ? AF_INET6 : AF_INET;
+        const bool ipv6 = r->atyp == SOCKS5_ATYP_IPV6;
+        kind = ipv6 ? "ipv6" : "ipv4";
+        const int af = ipv6 ? AF_INET6 : AF_INET;
         inet_ntop(af, r->dst_addr, host, sizeof(host));
-        snprintf(out, cap, "%s:%u", host, r->dst_port);
     }
+    snprintf(out, cap, "%s:%u", host, r->dst_port);
+    return kind;
 }
 
 static void log_request_dst(const struct socks5_request *r)
 {
     char dst[300];
-    format_request_dst(dst, sizeof(dst), r);
-    const char *kind = r->atyp == SOCKS5_ATYP_DOMAIN ? "domain"
-                     : r->atyp == SOCKS5_ATYP_IPV6   ? "ipv6"
-                                                     : "ipv4";
+    const char *kind = format_request_dst(dst, sizeof(dst), r);
     printf("socks5: CONNECT %s %s\n", kind, dst);
 }
 
@@ -405,7 +437,7 @@ static void socks5_log_access(struct socks5_conn *c, const char *result)
         user[1] = '\0';
     }
     char dst[300];
-    format_request_dst(dst, sizeof(dst), &c->request);
+    (void)format_request_dst(dst, sizeof(dst), &c->request);
     access_log_record(access_log, user, dst, result);
 }
 
@@ -479,13 +511,9 @@ static unsigned request_read(struct selector_key *key)
 {
     struct socks5_conn *c = key->data;
 
-    req_state st = request_parser_feed(&c->request, &c->read_buffer);
-    if (st != REQ_DONE && st != REQ_ERROR) {
-        int closed = fill_read_buffer(key, &c->read_buffer);
-        if (closed != -1) {
-            return (unsigned)closed;
-        }
-        st = request_parser_feed(&c->request, &c->read_buffer);
+    int st;
+    if (!feed_parser(key, feed_request, REQ_DONE, REQ_ERROR, &st)) {
+        return (unsigned)st;
     }
 
     if (st == REQ_ERROR) {

@@ -619,9 +619,9 @@ int stress_run_all(void)
              system.release, system.machine);
     struct rlimit files;
     if (getrlimit(RLIMIT_NOFILE, &files) == 0) {
-        /* 500 túneles IPv4 ≈ 1006-1008 fds del servidor, apenas bajo el límite
-         * blando por defecto (1024): elevar rlim_cur a rlim_max de forma defensiva
-         * antes de forkear para que el gate de 500 conexiones no falle espuriamente. */
+        /* 500 túneles IPv4 ≈ 1006-1008 fds del servidor, el límite blando por
+         * defecto dentro de FD_SETSIZE: elevar rlim_cur a rlim_max de forma
+         * defensiva antes de forkear para que el gate no falle espuriamente. */
         if (files.rlim_cur < files.rlim_max) {
             files.rlim_cur = files.rlim_max;
             (void)setrlimit(RLIMIT_NOFILE, &files);

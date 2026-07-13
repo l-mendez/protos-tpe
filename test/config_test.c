@@ -11,7 +11,7 @@ START_TEST(test_config_defaults)
 
     ck_assert_uint_eq(CONFIG_CONN_TIMEOUT_DEFAULT, config_conn_timeout(&c));
     ck_assert_uint_eq(CONFIG_IO_BUFFER_SIZE_DEFAULT, config_io_buffer_size(&c));
-    ck_assert_uint_eq(1024, config_max_connections(&c)); /* arranca en el techo */
+    ck_assert_uint_eq(500, config_max_connections(&c)); /* deja fds para relay y control */
 }
 END_TEST
 
@@ -55,15 +55,15 @@ START_TEST(test_config_max_connections_range)
     struct Config c;
     config_init(&c, 1024);
 
-    ck_assert(config_set_max_connections(&c, 800));
-    ck_assert_uint_eq(800, config_max_connections(&c));
+    ck_assert(config_set_max_connections(&c, 400));
+    ck_assert_uint_eq(400, config_max_connections(&c));
 
     ck_assert(config_set_max_connections(&c, 1));    /* mínimo */
-    ck_assert(config_set_max_connections(&c, 1024)); /* el techo exacto */
+    ck_assert(config_set_max_connections(&c, 500));  /* el techo exacto */
 
     ck_assert(!config_set_max_connections(&c, 0));    /* bajo el mínimo */
-    ck_assert(!config_set_max_connections(&c, 1025)); /* sobre el techo */
-    ck_assert_uint_eq(1024, config_max_connections(&c));
+    ck_assert(!config_set_max_connections(&c, 501));  /* sobre el techo */
+    ck_assert_uint_eq(500, config_max_connections(&c));
 }
 END_TEST
 

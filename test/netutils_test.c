@@ -27,6 +27,26 @@ START_TEST (test_sockaddr_to_human_ipv4) {
 }
 END_TEST
 
+START_TEST(test_sockaddr_to_human_does_not_write_past_buffer)
+{
+    struct {
+        char    buff[8];
+        uint8_t guard;
+    } output = { .buff = {0}, .guard = 0xA5 };
+
+    struct sockaddr_in addr = {
+        .sin_family = AF_INET,
+        .sin_port   = htons(9090),
+    };
+    addr.sin_addr.s_addr = htonl(0x01020304);
+
+    sockaddr_to_human(output.buff, sizeof(output.buff),
+                      (const struct sockaddr *)&addr);
+
+    ck_assert_uint_eq(0xA5, output.guard);
+}
+END_TEST
+
 
 START_TEST (test_sockaddr_to_human_ipv6) {
     char buff[50] = {0};
@@ -123,6 +143,7 @@ hello_suite(void) {
     tc = tcase_create("netutils");
 
     tcase_add_test(tc, test_sockaddr_to_human_ipv4);
+    tcase_add_test(tc, test_sockaddr_to_human_does_not_write_past_buffer);
     tcase_add_test(tc, test_sockaddr_to_human_ipv6);
     tcase_add_test(tc, test_sockaddr_get_addr_port_ipv4);
     tcase_add_test(tc, test_sockaddr_get_addr_port_ipv6);
