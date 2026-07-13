@@ -45,7 +45,6 @@ Los objetos intermedios se generan bajo `obj/`.
 | `-a <usr>:<pass>`   | credencial del administrador para el servicio de management        | —             |
 | `-o <path>`         | archivo persistente del registro de accesos                       | `access.log`  |
 | `-h`                | imprime la ayuda y termina                                        | —             |
-| `-v`                | imprime la versión y termina                                      | —             |
 
 ## Pruebas
 
