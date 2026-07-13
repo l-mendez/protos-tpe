@@ -68,11 +68,13 @@ $(STRESS_BIN): $(STRESS_OBJECTS)
 test: $(TEST_BINS)
 	@for t in $(TEST_BINS); do echo "== $$t =="; ./$$t || exit 1; done
 
-stress: server $(STRESS_BIN)
+stress:
 	@if [ "$$(uname -s)" != "Linux" ]; then \
 		echo "stress requires Linux; enter the Docker environment and run 'make stress'" >&2; \
 		exit 2; \
 	fi
+	$(MAKE) clean
+	$(MAKE) server $(STRESS_BIN)
 	./$(STRESS_BIN)
 
 clean:
