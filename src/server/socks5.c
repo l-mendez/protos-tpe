@@ -117,7 +117,7 @@ static struct socks5_conn *conn_list = NULL;
 static struct Metrics *metrics = NULL;
 
 /** fd del listener socks5 desarmado por agotamiento de descriptores (EMFILE/ENFILE);
- * -1 si no hay ninguno pausado. Se re-arma en socks5_close al liberarse un fd. */
+ * -1 si no hay ninguno pausado. Se re-arma al liberarse una conexión. */
 static int accept_paused_fd = -1;
 
 /** Tiempo máximo (en segundos) sin actividad para fases de handshake/connect. */
@@ -1457,9 +1457,20 @@ static void socks5_close(struct selector_key *key)
     }
     conn_free_if_unreferenced(c);
 
-    /* Se liberó un fd: re-armar el listener si quedó pausado por EMFILE/ENFILE. */
-    if (accept_paused_fd >= 0 &&
-        selector_set_interest(key->s, accept_paused_fd, OP_READ) == SELECTOR_SUCCESS) {
+    socks5_retry_accept(key->s);
+}
+
+void socks5_retry_accept(fd_selector s)
+{
+    if (s != NULL && accept_paused_fd >= 0 &&
+        selector_set_interest(s, accept_paused_fd, OP_READ) == SELECTOR_SUCCESS) {
+        accept_paused_fd = -1;
+    }
+}
+
+void socks5_forget_paused_listener(int fd)
+{
+    if (accept_paused_fd == fd) {
         accept_paused_fd = -1;
     }
 }
@@ -1483,8 +1494,8 @@ void socks5_passive_accept(struct selector_key *key)
         if (client < 0) {
             /* EAGAIN/EWOULDBLOCK: cola drenada, terminar normalmente. EMFILE/ENFILE:
              * descriptores agotados; desarmar el listener para no reintentar accept()
-             * en cada ciclo del selector (busy-spin al ~100% de CPU). Se re-arma en
-             * socks5_close cuando una conexión libera un fd. */
+             * en cada ciclo del selector (busy-spin al ~100% de CPU). Se re-arma
+             * cuando una conexión SOCKS5 o management libera un fd. */
             if (errno == EMFILE || errno == ENFILE) {
                 selector_set_interest_key(key, OP_NOOP);
                 accept_paused_fd = key->fd;

@@ -191,6 +191,7 @@ main(const int argc, char **argv)
                 /* Apagado ordenado: dejar de aceptar nuevas conexiones y
                  * drenar las que siguen vivas. */
                 if (runtime.passive >= 0) {
+                    socks5_forget_paused_listener(runtime.passive);
                     selector_unregister_fd(runtime.selector, runtime.passive);
                     close(runtime.passive);
                     runtime.passive = -1;

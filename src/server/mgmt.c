@@ -9,6 +9,7 @@
 
 #include "mgmt.h"
 #include "mgmt_parser.h"
+#include "socks5.h"
 
 /* Linux evita el SIGPIPE en send() con esta flag; macOS no la define y lo
  * resuelve ignorando SIGPIPE en el arranque, así que aquí degrada a 0. */
@@ -443,6 +444,7 @@ static void mgmt_close(struct selector_key *key)
     struct mgmt_conn *c = key->data;
 
     close(key->fd);
+    socks5_retry_accept(key->s);
     if (active_mgmt_connections > 0) {
         active_mgmt_connections--;
     }
