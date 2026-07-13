@@ -205,6 +205,36 @@ START_TEST(test_auth_consumes_optional_greeting_with_response)
 }
 END_TEST
 
+START_TEST(test_command_after_auth_rejects_unexpected_greeting)
+{
+    int fds[2];
+    ck_assert_int_eq(socketpair(AF_UNIX, SOCK_STREAM, 0, fds), 0);
+
+    FILE *out = tmpfile();
+    FILE *err = tmpfile();
+    ck_assert_ptr_nonnull(out);
+    ck_assert_ptr_nonnull(err);
+
+    write_peer_response(fds[1],
+                        "+OK authenticated\n"
+                        "+OK SMCP 1.0 ready\n"
+                        "+OK 1\nactive_connections 0\n");
+    ck_assert_int_eq(SMCP_RESULT_OK,
+                     smcp_cmd_auth(fds[0], "admin", "secret", false, out, err));
+    ck_assert_int_eq(SMCP_RESULT_TRANSPORT_ERROR,
+                     smcp_cmd_metrics(fds[0], false, out, err));
+
+    char text[512];
+    read_file(err, text, sizeof(text));
+    ck_assert_ptr_nonnull(strstr(text, "malformed response: +OK SMCP 1.0 ready\n"));
+
+    fclose(out);
+    fclose(err);
+    close(fds[0]);
+    close(fds[1]);
+}
+END_TEST
+
 Suite *
 suite(void)
 {
@@ -218,6 +248,7 @@ suite(void)
     tcase_add_test(tc, test_verbose_shows_command_and_raw_status);
     tcase_add_test(tc, test_server_error_keeps_session_usable);
     tcase_add_test(tc, test_auth_consumes_optional_greeting_with_response);
+    tcase_add_test(tc, test_command_after_auth_rejects_unexpected_greeting);
     suite_add_tcase(s, tc);
 
     return s;

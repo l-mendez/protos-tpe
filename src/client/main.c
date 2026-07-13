@@ -296,6 +296,13 @@ run_choice(int fd, int choice, bool verbose)
     }
 }
 
+static bool
+should_end_session(int choice, smcp_result result, bool input_eof)
+{
+    return choice == 'q' && result != SMCP_RESULT_TRANSPORT_ERROR &&
+           (result == SMCP_RESULT_OK || input_eof);
+}
+
 int
 main(const int argc, char **argv)
 {
@@ -333,7 +340,7 @@ main(const int argc, char **argv)
             continue;
         }
         smcp_result result = run_choice(fd, choice, args.verbose);
-        if (choice == 'q' && result == SMCP_RESULT_OK) {
+        if (should_end_session(choice, result, feof(stdin))) {
             close(fd);
             return 0;
         }

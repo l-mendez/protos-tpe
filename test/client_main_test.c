@@ -80,6 +80,14 @@ START_TEST(test_read_prompt_accepts_max_length_line_with_newline)
 }
 END_TEST
 
+START_TEST(test_eof_quit_ends_session_when_server_rejects_it)
+{
+    ck_assert(should_end_session('q', SMCP_RESULT_REJECTED, true));
+    ck_assert(!should_end_session('q', SMCP_RESULT_REJECTED, false));
+    ck_assert(!should_end_session('q', SMCP_RESULT_TRANSPORT_ERROR, true));
+}
+END_TEST
+
 static Suite *client_main_suite(void)
 {
     Suite *s = suite_create("client_main");
@@ -87,6 +95,7 @@ static Suite *client_main_suite(void)
     tcase_add_test(tc, test_read_menu_choice_maps_eof_to_quit);
     tcase_add_test(tc, test_read_prompt_accepts_final_line_without_newline);
     tcase_add_test(tc, test_read_prompt_accepts_max_length_line_with_newline);
+    tcase_add_test(tc, test_eof_quit_ends_session_when_server_rejects_it);
     suite_add_tcase(s, tc);
     return s;
 }

@@ -57,7 +57,8 @@ read_line(int fd, char *buf, size_t cap, FILE *err)
 }
 
 static smcp_result
-run_command(int fd, const char *command, const char *display_command, bool verbose, FILE *out, FILE *err)
+run_command(int fd, const char *command, const char *display_command,
+            bool allow_greeting, bool verbose, FILE *out, FILE *err)
 {
     char wire[SMCP_LINE_MAX];
     int n = snprintf(wire, sizeof(wire), "%s\n", command);
@@ -78,9 +79,14 @@ run_command(int fd, const char *command, const char *display_command, bool verbo
     if (!read_line(fd, line, sizeof(line), err)) {
         return SMCP_RESULT_TRANSPORT_ERROR;
     }
-    if (strncmp(line, "+OK SMCP ", 9) == 0 &&
-        !read_line(fd, line, sizeof(line), err)) {
-        return SMCP_RESULT_TRANSPORT_ERROR;
+    if (strncmp(line, "+OK SMCP ", 9) == 0) {
+        if (!allow_greeting) {
+            fprintf(err, "malformed response: %s\n", line);
+            return SMCP_RESULT_TRANSPORT_ERROR;
+        }
+        if (!read_line(fd, line, sizeof(line), err)) {
+            return SMCP_RESULT_TRANSPORT_ERROR;
+        }
     }
 
     if (strncmp(line, "-ERR ", 5) == 0) {
@@ -202,19 +208,20 @@ smcp_cmd_auth(int fd, const char *user, const char *pass, bool verbose, FILE *ou
         fprintf(err, "command too long\n");
         return SMCP_RESULT_REJECTED;
     }
-    return run_command(fd, cmd, "AUTH <admin> <password>", verbose, out, err);
+    return run_command(fd, cmd, "AUTH <admin> <password>", true,
+                       verbose, out, err);
 }
 
 smcp_result
 smcp_cmd_metrics(int fd, bool verbose, FILE *out, FILE *err)
 {
-    return run_command(fd, "METRICS", "METRICS", verbose, out, err);
+    return run_command(fd, "METRICS", "METRICS", false, verbose, out, err);
 }
 
 smcp_result
 smcp_cmd_list_users(int fd, bool verbose, FILE *out, FILE *err)
 {
-    return run_command(fd, "LIST-USERS", "LIST-USERS", verbose, out, err);
+    return run_command(fd, "LIST-USERS", "LIST-USERS", false, verbose, out, err);
 }
 
 smcp_result
@@ -230,7 +237,7 @@ smcp_cmd_add_user(int fd, const char *user, const char *pass, bool verbose, FILE
         fprintf(err, "command too long\n");
         return SMCP_RESULT_REJECTED;
     }
-    return run_command(fd, cmd, display, verbose, out, err);
+    return run_command(fd, cmd, display, false, verbose, out, err);
 }
 
 smcp_result
@@ -241,13 +248,13 @@ smcp_cmd_del_user(int fd, const char *user, bool verbose, FILE *out, FILE *err)
         fprintf(err, "command too long\n");
         return SMCP_RESULT_REJECTED;
     }
-    return run_command(fd, cmd, cmd, verbose, out, err);
+    return run_command(fd, cmd, cmd, false, verbose, out, err);
 }
 
 smcp_result
 smcp_cmd_get_config(int fd, bool verbose, FILE *out, FILE *err)
 {
-    return run_command(fd, "GET-CONFIG", "GET-CONFIG", verbose, out, err);
+    return run_command(fd, "GET-CONFIG", "GET-CONFIG", false, verbose, out, err);
 }
 
 smcp_result
@@ -258,7 +265,7 @@ smcp_cmd_set(int fd, const char *key, const char *value, bool verbose, FILE *out
         fprintf(err, "command too long\n");
         return SMCP_RESULT_REJECTED;
     }
-    return run_command(fd, cmd, cmd, verbose, out, err);
+    return run_command(fd, cmd, cmd, false, verbose, out, err);
 }
 
 smcp_result
@@ -271,7 +278,7 @@ smcp_cmd_log(int fd, const char *count, bool verbose, FILE *out, FILE *err)
         fprintf(err, "command too long\n");
         return SMCP_RESULT_REJECTED;
     }
-    return run_command(fd, cmd, cmd, verbose, out, err);
+    return run_command(fd, cmd, cmd, false, verbose, out, err);
 }
 
 smcp_result
@@ -282,17 +289,18 @@ smcp_cmd_passwd(int fd, const char *pass, bool verbose, FILE *out, FILE *err)
         fprintf(err, "command too long\n");
         return SMCP_RESULT_REJECTED;
     }
-    return run_command(fd, cmd, "PASSWD <new-password>", verbose, out, err);
+    return run_command(fd, cmd, "PASSWD <new-password>", false,
+                       verbose, out, err);
 }
 
 smcp_result
 smcp_cmd_help(int fd, bool verbose, FILE *out, FILE *err)
 {
-    return run_command(fd, "HELP", "HELP", verbose, out, err);
+    return run_command(fd, "HELP", "HELP", false, verbose, out, err);
 }
 
 smcp_result
 smcp_cmd_quit(int fd, bool verbose, FILE *out, FILE *err)
 {
-    return run_command(fd, "QUIT", "QUIT", verbose, out, err);
+    return run_command(fd, "QUIT", "QUIT", false, verbose, out, err);
 }
