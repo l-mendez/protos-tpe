@@ -53,6 +53,15 @@ Los objetos intermedios se generan bajo `obj/`.
 make test       # compila y ejecuta la batería de pruebas unitarias
 ```
 
+Las pruebas de carga se ejecutan por separado y requieren Linux:
+
+```sh
+make stress     # capacidad, throughput y soak del proxy
+```
+
+La metodología, los escenarios y los artefactos generados están documentados en
+[`docs/stress-testing.md`](docs/stress-testing.md).
+
 ## Desarrollo en Linux con Docker
 
 El proyecto también puede compilarse dentro de un contenedor Linux sin cambiar

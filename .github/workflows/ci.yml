@@ -103,4 +103,4 @@ jobs:
 
       - name: Static analysis
         if: steps.changes.outputs.c_headers == 'true'
-        run: cppcheck --enable=warning,performance,portability --std=c11 --error-exitcode=1 -Isrc/shared --suppress=missingIncludeSystem src test
+        run: cppcheck --enable=warning,performance,portability --std=c11 --error-exitcode=1 -Isrc/shared -Istress --suppress=missingIncludeSystem src stress test

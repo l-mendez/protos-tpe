@@ -28,6 +28,14 @@
 void
 socks5_passive_accept(struct selector_key *key);
 
+/** Re-arma el listener SOCKS5 pausado por EMFILE/ENFILE tras liberar un fd. */
+void
+socks5_retry_accept(fd_selector s);
+
+/** Descarta el listener pausado antes de desregistrarlo y cerrar su fd. */
+void
+socks5_forget_paused_listener(int fd);
+
 /**
  * Inyecta el almacén de usuarios del proxy contra el que se validan las
  * credenciales durante la autenticación user/pass (RFC 1929). El almacén vive en

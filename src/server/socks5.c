@@ -2,6 +2,7 @@
 #include <errno.h>
 #include <netdb.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <pthread.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -114,6 +115,10 @@ static struct socks5_conn *conn_list = NULL;
 
 /** Métricas del proceso, inyectadas por main() vía socks5_set_metrics(). */
 static struct Metrics *metrics = NULL;
+
+/** fd del listener socks5 desarmado por agotamiento de descriptores (EMFILE/ENFILE);
+ * -1 si no hay ninguno pausado. Se re-arma al liberarse una conexión. */
+static int accept_paused_fd = -1;
 
 /** Tiempo máximo (en segundos) sin actividad para fases de handshake/connect. */
 #define SOCKS5_INACTIVITY_TIMEOUT 60
@@ -992,6 +997,7 @@ static unsigned request_connect(struct selector_key *key)
             close(fd);
             continue;
         }
+        (void)setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &(int){ 1 }, sizeof(int));
 
         int rc = connect(fd, ai->ai_addr, ai->ai_addrlen);
         if (rc == 0) {
@@ -1450,6 +1456,23 @@ static void socks5_close(struct selector_key *key)
         resolver_take_completed(c);
     }
     conn_free_if_unreferenced(c);
+
+    socks5_retry_accept(key->s);
+}
+
+void socks5_retry_accept(fd_selector s)
+{
+    if (s != NULL && accept_paused_fd >= 0 &&
+        selector_set_interest(s, accept_paused_fd, OP_READ) == SELECTOR_SUCCESS) {
+        accept_paused_fd = -1;
+    }
+}
+
+void socks5_forget_paused_listener(int fd)
+{
+    if (accept_paused_fd == fd) {
+        accept_paused_fd = -1;
+    }
 }
 
 static const fd_handler socks5_handler = {
@@ -1461,66 +1484,82 @@ static const fd_handler socks5_handler = {
 
 void socks5_passive_accept(struct selector_key *key)
 {
-    struct sockaddr_storage from;
-    socklen_t               from_len = sizeof(from);
+    /* Drenar toda la cola de aceptación: el listener es no bloqueante, así que
+     * accept() devuelve -1 (EAGAIN) cuando no quedan conexiones pendientes. */
+    for (;;) {
+        struct sockaddr_storage from;
+        socklen_t               from_len = sizeof(from);
 
-    int client = accept(key->fd, (struct sockaddr *)&from, &from_len);
-    if (client < 0) {
-        return;
+        int client = accept(key->fd, (struct sockaddr *)&from, &from_len);
+        if (client < 0) {
+            /* EAGAIN/EWOULDBLOCK: cola drenada, terminar normalmente. EMFILE/ENFILE:
+             * descriptores agotados; desarmar el listener para no reintentar accept()
+             * en cada ciclo del selector (busy-spin al ~100% de CPU). Se re-arma
+             * cuando una conexión SOCKS5 o management libera un fd. */
+            if (errno == EMFILE || errno == ENFILE) {
+                selector_set_interest_key(key, OP_NOOP);
+                accept_paused_fd = key->fd;
+            }
+            return;
+        }
+
+        /* Tope blando de conexiones concurrentes: si ya se alcanzó, rechazar la
+         * nueva sin registrarla. */
+        if (config != NULL && metrics != NULL &&
+            metrics->active_connections >= config_max_connections(config)) {
+            close(client);
+            continue;
+        }
+
+        if (selector_fd_set_nio(client) < 0) {
+            close(client);
+            continue;
+        }
+
+        /* Nagle + delayed ACK agrega ~40ms por ida y vuelta en el relay;
+         * deshabilitarlo no es crítico, así que se ignora el resultado. */
+        (void)setsockopt(client, IPPROTO_TCP, TCP_NODELAY, &(int){ 1 }, sizeof(int));
+
+        struct socks5_conn *conn = calloc(1, sizeof(*conn));
+        if (conn == NULL) {
+            close(client);
+            continue;
+        }
+
+        /* Buffers de relay en el heap, con el tamaño vigente (io_buffer_size). */
+        const size_t bufsize = effective_io_buffer_size();
+        conn->raw_read  = malloc(bufsize);
+        conn->raw_write = malloc(bufsize);
+        if (conn->raw_read == NULL || conn->raw_write == NULL) {
+            free(conn->raw_read);
+            free(conn->raw_write);
+            free(conn);
+            close(client);
+            continue;
+        }
+        buffer_init(&conn->read_buffer, bufsize, conn->raw_read);
+        buffer_init(&conn->write_buffer, bufsize, conn->raw_write);
+
+        conn->selector   = key->s;
+        conn->client_fd  = client;
+        conn->origin_fd  = -1;
+        conn->references = 1;
+        conn->active_counted = true;
+
+        conn->stm.initial   = NEG_READ;
+        conn->stm.states    = socks5_states;
+        conn->stm.max_state = ERROR;
+        stm_init(&conn->stm);
+
+        if (selector_register(key->s, client, &socks5_handler, OP_READ, conn) != SELECTOR_SUCCESS) {
+            free(conn->raw_read);
+            free(conn->raw_write);
+            free(conn);
+            close(client);
+            continue;
+        }
+        conn->last_activity = monotonic_now();
+        conn_list_push(conn);
+        metrics_connection_opened(metrics);
     }
-
-    /* Tope blando de conexiones concurrentes: si ya se alcanzó, rechazar la nueva
-     * sin registrarla. */
-    if (config != NULL && metrics != NULL &&
-        metrics->active_connections >= config_max_connections(config)) {
-        close(client);
-        return;
-    }
-
-    if (selector_fd_set_nio(client) < 0) {
-        close(client);
-        return;
-    }
-
-    struct socks5_conn *conn = calloc(1, sizeof(*conn));
-    if (conn == NULL) {
-        close(client);
-        return;
-    }
-
-    /* Buffers de relay en el heap, con el tamaño vigente (io_buffer_size). */
-    const size_t bufsize = effective_io_buffer_size();
-    conn->raw_read  = malloc(bufsize);
-    conn->raw_write = malloc(bufsize);
-    if (conn->raw_read == NULL || conn->raw_write == NULL) {
-        free(conn->raw_read);
-        free(conn->raw_write);
-        free(conn);
-        close(client);
-        return;
-    }
-    buffer_init(&conn->read_buffer, bufsize, conn->raw_read);
-    buffer_init(&conn->write_buffer, bufsize, conn->raw_write);
-
-    conn->selector   = key->s;
-    conn->client_fd  = client;
-    conn->origin_fd  = -1;
-    conn->references = 1;
-    conn->active_counted = true;
-
-    conn->stm.initial   = NEG_READ;
-    conn->stm.states    = socks5_states;
-    conn->stm.max_state = ERROR;
-    stm_init(&conn->stm);
-
-    if (selector_register(key->s, client, &socks5_handler, OP_READ, conn) != SELECTOR_SUCCESS) {
-        free(conn->raw_read);
-        free(conn->raw_write);
-        free(conn);
-        close(client);
-        return;
-    }
-    conn->last_activity = monotonic_now();
-    conn_list_push(conn);
-    metrics_connection_opened(metrics);
 }
