@@ -13,7 +13,7 @@
 #include "selector.h"
 
 /* SOCKS5 units live in src/server, outside the shared archive; include them
- * directly. socks5.c only #includes the parser headers, so pull the parser
+ * directly. socks5.c only #includes the parser/resolver headers, so pull those
  * units in too (each .c exactly once to avoid duplicate symbols). */
 #include "../src/server/server.c"
 #include "../src/server/negotiation.c"
@@ -24,6 +24,7 @@
 #include "../src/server/access_log.c"
 #include "../src/server/config.c"
 #include "../src/server/socks5.c"
+#include "../src/server/socks5_resolver.c"
 
 static fd_selector           test_selector;
 static volatile sig_atomic_t test_stop;
@@ -1428,7 +1429,7 @@ START_TEST(test_socks5_resolver_pool_rejects_when_capacity_is_exhausted)
 
     ck_assert(socks5_resolver_pool_start());
     resolver_jobs_in_system = RESOLVER_MAX_JOBS;
-    ck_assert(!resolver_queue_job(c, "localhost", "80"));
+    ck_assert(!socks5_resolver_queue_job(c, "localhost", "80"));
     resolver_jobs_in_system = 0;
     socks5_resolver_pool_stop();
 
@@ -1528,7 +1529,7 @@ END_TEST
  * the worker thread never reads c->client_fd (which the main thread rewrites
  * without the resolver lock).
  *
- * The pool is flagged as started so resolver_queue_job enqueues the job without
+ * The pool is flagged as started so socks5_resolver_queue_job enqueues the job without
  * spawning real workers: it sits unprocessed, letting us inspect the wakeup
  * target it captured without a worker racing to wake a selector this test never
  * runs. close() then cancels and frees the still-queued job. */
@@ -1552,7 +1553,7 @@ START_TEST(test_socks5_resolver_job_captures_notify_target)
     resolver_pool_started = true;
     pthread_mutex_unlock(&resolver_mutex);
 
-    ck_assert(resolver_queue_job(c, "host.example", "443"));
+    ck_assert(socks5_resolver_queue_job(c, "host.example", "443"));
 
     pthread_mutex_lock(&resolver_mutex);
     struct resolver_job *job = c->resolver_job;
