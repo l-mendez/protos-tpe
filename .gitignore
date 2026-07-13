@@ -3,6 +3,7 @@
 /obj/
 
 *.log
+/stress/results/
 
 # Local reference material, not part of the project
 /.references/
