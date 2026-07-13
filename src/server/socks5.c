@@ -15,6 +15,7 @@
 #include "buffer.h"
 #include "metrics.h"
 #include "negotiation.h"
+#include "netutils.h"
 #include "access_log.h"
 #include "config.h"
 #include "request.h"
@@ -30,13 +31,6 @@
 #ifndef MSG_NOSIGNAL
 #define MSG_NOSIGNAL 0
 #endif
-
-/* En un socket no bloqueante, recv/send pueden devolver -1 con uno de estos
- * errno: no es un fallo de la conexión, hay que reintentar más tarde. */
-static inline int would_block(int err)
-{
-    return err == EAGAIN || err == EWOULDBLOCK || err == EINTR;
-}
 
 /* Estados de la conexión SOCKS5. */
 enum socks5_state {
@@ -164,7 +158,7 @@ static bool auth_required(void)
 
 size_t socks5_active_connections(void)
 {
-    return metrics->active_connections;
+    return metrics != NULL ? metrics->active_connections : 0;
 }
 
 /* ------------------------------------------------------------------ helpers */
@@ -927,7 +921,9 @@ static time_t reap_last_sweep = 0;
 /* Cierra conexiones que superan el conn_timeout vigente sin actividad. Se invoca
  * desde el loop principal después de cada selector_select, así que corre a lo
  * sumo cada select_timeout (10s). Usa un throttle estático para no recorrer la
- * lista más de una vez por segundo. */
+ * lista más de una vez por segundo; eso puede demorar hasta 1s el fallback de
+ * resoluciones completadas, aceptable porque sólo actúa si la notificación
+ * primaria (selector_notify_block) falló. */
 void socks5_reap_idle(fd_selector s)
 {
     const time_t now = monotonic_now();
