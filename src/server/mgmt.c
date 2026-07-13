@@ -360,6 +360,26 @@ static void process_input_lines(struct mgmt_conn *c)
     }
 }
 
+static bool mgmt_flush(struct selector_key *key)
+{
+    struct mgmt_conn *c = key->data;
+
+    while (has_output(c)) {
+        size_t   pending;
+        uint8_t *ptr = buffer_read_ptr(&c->write_buffer, &pending);
+        ssize_t  n   = send(key->fd, ptr, pending, MSG_NOSIGNAL);
+        if (n > 0) {
+            buffer_read_adv(&c->write_buffer, n);
+        } else if (n < 0 && would_block(errno)) {
+            return true;
+        } else {
+            selector_unregister_fd(key->s, key->fd);
+            return false;
+        }
+    }
+    return true;
+}
+
 static void mgmt_read(struct selector_key *key)
 {
     struct mgmt_conn *c = key->data;
@@ -377,6 +397,13 @@ static void mgmt_read(struct selector_key *key)
     if (n > 0) {
         buffer_write_adv(&c->read_buffer, n);
         process_input_lines(c);
+        if (!mgmt_flush(key)) {
+            return;
+        }
+        if (c->close_after_write && !has_output(c)) {
+            selector_unregister_fd(key->s, key->fd);
+            return;
+        }
         selector_set_interest_key(key, has_output(c) ? OP_WRITE : OP_READ);
         return;
     }
@@ -390,18 +417,8 @@ static void mgmt_write(struct selector_key *key)
 {
     struct mgmt_conn *c = key->data;
 
-    if (has_output(c)) {
-        size_t   pending;
-        uint8_t *ptr = buffer_read_ptr(&c->write_buffer, &pending);
-        ssize_t  n   = send(key->fd, ptr, pending, MSG_NOSIGNAL);
-        if (n > 0) {
-            buffer_read_adv(&c->write_buffer, n);
-        } else if (n < 0 && would_block(errno)) {
-            return;
-        } else {
-            selector_unregister_fd(key->s, key->fd);
-            return;
-        }
+    if (!mgmt_flush(key)) {
+        return;
     }
 
     if (has_output(c)) {
