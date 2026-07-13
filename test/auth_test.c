@@ -7,7 +7,7 @@
 
 /* The auth parser lives in src/server, outside the shared archive the tests link
  * against, so the unit is included directly (same approach as negotiation_test).
- * Its "" includes resolve relative to src/server (and -Isrc/shared for buffer.h). */
+ * Its "" includes resolve through the project include paths. */
 #include "../src/server/auth.c"
 
 #define N(x) (sizeof(x) / sizeof((x)[0]))

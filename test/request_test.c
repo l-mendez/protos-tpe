@@ -7,7 +7,7 @@
 #include "buffer.h"
 
 /* The request parser lives in src/server, outside the shared archive; include
- * the unit directly (buffer.h via -Isrc/shared). */
+ * the unit directly. */
 #include "../src/server/request.c"
 
 #define N(x) (sizeof(x) / sizeof((x)[0]))

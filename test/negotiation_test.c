@@ -7,7 +7,7 @@
 
 /* The negotiation parser lives in src/server, outside the shared archive the
  * tests link against, so the unit is included directly. Its "" includes resolve
- * relative to its own directory in src/server (and -Isrc/shared for buffer.h). */
+ * through the project include paths. */
 #include "../src/server/negotiation.c"
 
 #define N(x) (sizeof(x) / sizeof((x)[0]))
