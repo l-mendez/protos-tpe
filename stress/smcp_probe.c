@@ -16,21 +16,34 @@ static bool send_all(int fd, const char *text)
     return stress_write_full(fd, text, strlen(text));
 }
 
-static bool read_line(int fd, char *dst, size_t cap)
+struct line_reader {
+    int fd;
+    char buf[512];
+    size_t pos;   /* next unread byte in buf */
+    size_t len;   /* bytes currently in buf */
+};
+
+static bool read_line(struct line_reader *r, char *dst, size_t cap)
 {
     if (cap < 2) return false;
     size_t used = 0;
     while (used + 1 < cap) {
-        ssize_t n = recv(fd, dst + used, 1, 0);
-        if (n == 1) {
-            if (dst[used++] == '\n') {
-                dst[used] = '\0';
-                return true;
+        if (r->pos == r->len) {
+            ssize_t n = recv(r->fd, r->buf, sizeof(r->buf), 0);
+            if (n > 0) {
+                r->pos = 0;
+                r->len = (size_t)n;
+            } else if (n < 0 && errno == EINTR) {
+                continue;
+            } else {
+                return false;
             }
-        } else if (n < 0 && errno == EINTR) {
-            continue;
-        } else {
-            return false;
+        }
+        char c = r->buf[r->pos++];
+        dst[used++] = c;
+        if (c == '\n') {
+            dst[used] = '\0';
+            return true;
         }
     }
     return false;
@@ -50,6 +63,7 @@ bool stress_smcp_query_metrics(uint16_t port, struct stress_metrics *metrics)
         .sin_port = htons(port),
     };
     bool ok = connect(fd, (struct sockaddr *)&address, sizeof(address)) == 0;
+    struct line_reader reader = {.fd = fd, .pos = 0, .len = 0};
     char line[256];
     char response[2048] = {0};
     char command[600];
@@ -57,13 +71,14 @@ bool stress_smcp_query_metrics(uint16_t port, struct stress_metrics *metrics)
                                STRESS_ADMIN_USER, STRESS_ADMIN_PASS);
     if (ok) ok = command_len > 0 && (size_t)command_len < sizeof(command) &&
                  send_all(fd, command);
-    if (ok) ok = read_line(fd, line, sizeof(line)) &&
+    if (ok) ok = read_line(&reader, line, sizeof(line)) &&
                  strcmp(line, "+OK authenticated\n") == 0;
-    if (ok) ok = send_all(fd, "METRICS\n") && read_line(fd, line, sizeof(line)) &&
+    if (ok) ok = send_all(fd, "METRICS\n") &&
+                 read_line(&reader, line, sizeof(line)) &&
                  strcmp(line, "+OK 7\n") == 0;
     if (ok) memcpy(response, line, strlen(line) + 1);
     for (unsigned i = 0; ok && i < 7; i++) {
-        ok = read_line(fd, line, sizeof(line));
+        ok = read_line(&reader, line, sizeof(line));
         size_t used = strlen(response), len = strlen(line);
         if (ok && used + len < sizeof(response)) {
             memcpy(response + used, line, len + 1);
