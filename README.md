@@ -45,7 +45,6 @@ Los objetos intermedios se generan bajo `obj/`.
 | `-a <usr>:<pass>`   | credencial del administrador para el servicio de management        | —             |
 | `-o <path>`         | archivo persistente del registro de accesos                       | `access.log`  |
 | `-h`                | imprime la ayuda y termina                                        | —             |
-| `-v`                | imprime la versión y termina                                      | —             |
 
 ## Pruebas
 
@@ -101,8 +100,11 @@ sistema.
 ## Estructura
 
 ```
-src/shared/   utilidades comunes al servidor y al cliente
-src/server/   servidor proxy SOCKS5 y servicio de management
-src/client/   cliente de monitoreo y configuración
-test/         pruebas unitarias
+src/shared/          implementación de utilidades comunes
+src/shared/include/  headers de utilidades comunes
+src/server/          implementación del servidor proxy SOCKS5 y management
+src/server/include/  headers del servidor
+src/client/          implementación del cliente de monitoreo y configuración
+src/client/include/  headers del cliente
+test/                pruebas unitarias
 ```

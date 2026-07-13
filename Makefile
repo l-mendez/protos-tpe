@@ -48,7 +48,7 @@ $(SHARED_LIB): $(SHARED_OBJECTS)
 # Some tests #include a server/shared unit directly to reach its statics. Make
 # can't see those includes, so depend on every source and header to rebuild the
 # test binaries whenever an included unit changes (avoids running stale tests).
-TEST_DEPS=$(wildcard src/server/*.c src/server/*.h src/client/*.c src/client/*.h src/shared/*.c src/shared/*.h stress/*.c stress/*.h)
+TEST_DEPS=$(wildcard src/server/*.c src/client/*.c src/shared/*.c src/server/include/*.h src/client/include/*.h src/shared/include/*.h stress/*.c stress/*.h)
 
 $(BIN)/test/%: test/%.c $(SHARED_LIB) $(TEST_DEPS)
 	@mkdir -p $(@D)

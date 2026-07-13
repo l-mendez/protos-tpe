@@ -4,11 +4,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
 #include "mgmt.h"
 #include "mgmt_parser.h"
+#include "netutils.h"
 #include "socks5.h"
 
 /* Linux evita el SIGPIPE en send() con esta flag; macOS no la define y lo
@@ -42,11 +44,6 @@ static const fd_handler mgmt_handler = {
     .handle_write = mgmt_write,
     .handle_close = mgmt_close,
 };
-
-static inline int would_block(int err)
-{
-    return err == EAGAIN || err == EWOULDBLOCK || err == EINTR;
-}
 
 /* ------------------------------------------------------------ admin creds */
 
@@ -91,16 +88,10 @@ size_t mgmt_active_connections(void)
 
 /* ------------------------------------------------------------ helpers */
 
-/* Comparación de comando, case-insensitive (ASCII). */
+/* Comparación de comando, case-insensitive. */
 static bool ieq(const char *a, const char *b)
 {
-    for (; *a != '\0' && *b != '\0'; a++, b++) {
-        char ca = *a, cb = *b;
-        if (ca >= 'a' && ca <= 'z') ca -= 32;
-        if (cb >= 'a' && cb <= 'z') cb -= 32;
-        if (ca != cb) return false;
-    }
-    return *a == *b;
+    return strcasecmp(a, b) == 0;
 }
 
 /* Escribe una respuesta formateada en el buffer (acotada a una línea larga). */
@@ -281,6 +272,11 @@ bool mgmt_handle_line(struct mgmt_session *s, char *line, buffer *out)
     }
     const char *cmd = argv[0];
 
+    if (argc != 1 && (ieq(cmd, "QUIT") || ieq(cmd, "HELP"))) {
+        out_printf(out, "-ERR invalid\n");
+        return false;
+    }
+
     /* Comandos disponibles en cualquier estado. */
     if (ieq(cmd, "QUIT")) {
         out_printf(out, "+OK bye\n");
@@ -307,6 +303,12 @@ bool mgmt_handle_line(struct mgmt_session *s, char *line, buffer *out)
     /* El resto requiere autenticación. */
     if (!s->authenticated) {
         out_printf(out, "-ERR not authenticated\n");
+        return false;
+    }
+
+    if (argc != 1 &&
+        (ieq(cmd, "METRICS") || ieq(cmd, "LIST-USERS") || ieq(cmd, "GET-CONFIG"))) {
+        out_printf(out, "-ERR invalid\n");
         return false;
     }
 
@@ -340,7 +342,7 @@ static bool has_output(struct mgmt_conn *c)
 
 static void process_input_lines(struct mgmt_conn *c)
 {
-    while (buffer_can_read(&c->read_buffer) && buffer_can_write(&c->write_buffer)) {
+    while (buffer_can_read(&c->read_buffer) && !has_output(c)) {
         mgmt_line_state st = mgmt_parser_feed(&c->parser, &c->read_buffer);
         if (st == MGMT_LINE_INCOMPLETE) {
             break;
@@ -381,6 +383,20 @@ static bool mgmt_flush(struct selector_key *key)
     return true;
 }
 
+static bool process_and_flush(struct selector_key *key)
+{
+    struct mgmt_conn *c = key->data;
+
+    do {
+        process_input_lines(c);
+        if (!mgmt_flush(key)) {
+            return false;
+        }
+    } while (!has_output(c) && !c->close_after_write &&
+             buffer_can_read(&c->read_buffer));
+    return true;
+}
+
 static void mgmt_read(struct selector_key *key)
 {
     struct mgmt_conn *c = key->data;
@@ -397,8 +413,7 @@ static void mgmt_read(struct selector_key *key)
     ssize_t  n   = recv(key->fd, ptr, space, 0);
     if (n > 0) {
         buffer_write_adv(&c->read_buffer, n);
-        process_input_lines(c);
-        if (!mgmt_flush(key)) {
+        if (!process_and_flush(key)) {
             return;
         }
         if (c->close_after_write && !has_output(c)) {
@@ -418,7 +433,7 @@ static void mgmt_write(struct selector_key *key)
 {
     struct mgmt_conn *c = key->data;
 
-    if (!mgmt_flush(key)) {
+    if (!process_and_flush(key)) {
         return;
     }
 
@@ -431,12 +446,7 @@ static void mgmt_write(struct selector_key *key)
         return;
     }
 
-    process_input_lines(c);
-    if (has_output(c)) {
-        selector_set_interest_key(key, OP_WRITE);
-    } else {
-        selector_set_interest_key(key, OP_READ);
-    }
+    selector_set_interest_key(key, OP_READ);
 }
 
 static void mgmt_close(struct selector_key *key)

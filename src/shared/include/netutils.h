@@ -1,12 +1,20 @@
 #ifndef NETUTILS_H_CTCyWGhkVt1pazNytqIRptmAi5U
 #define NETUTILS_H_CTCyWGhkVt1pazNytqIRptmAi5U
 
+#include <errno.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <netinet/in.h>
 
 #include "buffer.h"
+
+/* En un socket no bloqueante, recv/send pueden devolver -1 con uno de estos
+ * errno: no es un fallo de la conexión, hay que reintentar más tarde. */
+static inline int would_block(int err)
+{
+    return err == EAGAIN || err == EWOULDBLOCK || err == EINTR;
+}
 
 #define SOCKADDR_TO_HUMAN_MIN (INET6_ADDRSTRLEN + 5 + 1)
 /**

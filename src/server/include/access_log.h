@@ -6,7 +6,7 @@
 #include <stdio.h>
 
 /**
- * access_log.c -- registro de accesos persistente (req 8 de la consigna).
+ * access_log.c -- registro de accesos persistente.
  *
  * Escribe una línea por intento de CONNECT en un archivo de texto en modo
  * *append* (fuente de verdad, durable: sobrevive reinicios). El comando LOG del

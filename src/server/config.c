@@ -1,12 +1,27 @@
 #include "config.h"
 
-void
-config_init(struct Config *c, uint32_t max_connections_hard)
+#define CONFIG_SELECTOR_FD_RESERVE 24u
+#define CONFIG_FDS_PER_CONNECTION  2u
+
+static uint32_t
+max_connections_for_selector(uint32_t selector_fd_capacity)
 {
+    if (selector_fd_capacity <= CONFIG_SELECTOR_FD_RESERVE) {
+        return 1;
+    }
+    return (selector_fd_capacity - CONFIG_SELECTOR_FD_RESERVE) /
+           CONFIG_FDS_PER_CONNECTION;
+}
+
+void
+config_init(struct Config *c, uint32_t selector_fd_capacity)
+{
+    const uint32_t max_connections =
+        max_connections_for_selector(selector_fd_capacity);
     c->conn_timeout         = CONFIG_CONN_TIMEOUT_DEFAULT;
     c->io_buffer_size       = CONFIG_IO_BUFFER_SIZE_DEFAULT;
-    c->max_connections      = max_connections_hard;
-    c->max_connections_hard = max_connections_hard;
+    c->max_connections      = max_connections;
+    c->max_connections_hard = max_connections;
 }
 
 uint32_t config_conn_timeout(const struct Config *c)    { return c->conn_timeout; }

@@ -6,7 +6,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/select.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -57,17 +56,18 @@ read_line(int fd, char *buf, size_t cap, FILE *err)
     return false;
 }
 
-static bool
-run_command(int fd, const char *command, const char *display_command, bool verbose, FILE *out, FILE *err)
+static smcp_result
+run_command(int fd, const char *command, const char *display_command,
+            bool allow_greeting, bool verbose, FILE *out, FILE *err)
 {
     char wire[SMCP_LINE_MAX];
     int n = snprintf(wire, sizeof(wire), "%s\n", command);
     if (n < 0 || (size_t)n >= sizeof(wire)) {
         fprintf(err, "command too long\n");
-        return false;
+        return SMCP_RESULT_REJECTED;
     }
     if (!send_all(fd, wire, err)) {
-        return false;
+        return SMCP_RESULT_TRANSPORT_ERROR;
     }
 
     if (verbose) {
@@ -77,16 +77,25 @@ run_command(int fd, const char *command, const char *display_command, bool verbo
 
     char line[SMCP_LINE_MAX];
     if (!read_line(fd, line, sizeof(line), err)) {
-        return false;
+        return SMCP_RESULT_TRANSPORT_ERROR;
+    }
+    if (strncmp(line, "+OK SMCP ", 9) == 0) {
+        if (!allow_greeting) {
+            fprintf(err, "malformed response: %s\n", line);
+            return SMCP_RESULT_TRANSPORT_ERROR;
+        }
+        if (!read_line(fd, line, sizeof(line), err)) {
+            return SMCP_RESULT_TRANSPORT_ERROR;
+        }
     }
 
     if (strncmp(line, "-ERR ", 5) == 0) {
         fprintf(err, "%s\n", verbose ? line : line + 5);
-        return false;
+        return SMCP_RESULT_REJECTED;
     }
     if (strncmp(line, "+OK", 3) != 0) {
         fprintf(err, "malformed response: %s\n", line);
-        return false;
+        return SMCP_RESULT_TRANSPORT_ERROR;
     }
 
     unsigned long count;
@@ -96,7 +105,7 @@ run_command(int fd, const char *command, const char *display_command, bool verbo
         }
         for (unsigned long i = 0; i < count; i++) {
             if (!read_line(fd, line, sizeof(line), err)) {
-                return false;
+                return SMCP_RESULT_TRANSPORT_ERROR;
             }
             fprintf(out, "%s%s\n", verbose ? "  " : "", line);
         }
@@ -110,7 +119,7 @@ run_command(int fd, const char *command, const char *display_command, bool verbo
         fprintf(out, "%s\n", line);
     }
     fflush(out);
-    return true;
+    return SMCP_RESULT_OK;
 }
 
 static bool
@@ -118,18 +127,6 @@ build_command(char *dst, size_t cap, const char *fmt, const char *a, const char 
 {
     int n = b == NULL ? snprintf(dst, cap, fmt, a) : snprintf(dst, cap, fmt, a, b);
     return n >= 0 && (size_t)n < cap;
-}
-
-static bool
-optional_greeting_waiting(int fd)
-{
-    fd_set set;
-    FD_ZERO(&set);
-    FD_SET(fd, &set);
-
-    struct timeval tv = { .tv_sec = 0, .tv_usec = 200000 };
-    int ready = select(fd + 1, &set, NULL, NULL, &tv);
-    return ready > 0 && FD_ISSET(fd, &set);
 }
 
 int
@@ -172,25 +169,6 @@ smcp_connect(const char *host, unsigned short port, FILE *err)
 }
 
 bool
-smcp_read_optional_greeting(int fd, FILE *err)
-{
-    if (!optional_greeting_waiting(fd)) {
-        return true;
-    }
-
-    char line[SMCP_LINE_MAX];
-    if (!read_line(fd, line, sizeof(line), err)) {
-        return false;
-    }
-    if (strncmp(line, "+OK SMCP ", 9) == 0) {
-        return true;
-    }
-
-    fprintf(err, "unexpected greeting: %s\n", line);
-    return false;
-}
-
-bool
 smcp_is_token(const char *s)
 {
     if (s[0] == '\0') {
@@ -222,74 +200,75 @@ smcp_parse_count_status(const char *line, unsigned long *out)
     return true;
 }
 
-bool
+smcp_result
 smcp_cmd_auth(int fd, const char *user, const char *pass, bool verbose, FILE *out, FILE *err)
 {
     char cmd[SMCP_LINE_MAX];
     if (!build_command(cmd, sizeof(cmd), "AUTH %s %s", user, pass)) {
         fprintf(err, "command too long\n");
-        return false;
+        return SMCP_RESULT_REJECTED;
     }
-    return run_command(fd, cmd, "AUTH <admin> <password>", verbose, out, err);
+    return run_command(fd, cmd, "AUTH <admin> <password>", true,
+                       verbose, out, err);
 }
 
-bool
+smcp_result
 smcp_cmd_metrics(int fd, bool verbose, FILE *out, FILE *err)
 {
-    return run_command(fd, "METRICS", "METRICS", verbose, out, err);
+    return run_command(fd, "METRICS", "METRICS", false, verbose, out, err);
 }
 
-bool
+smcp_result
 smcp_cmd_list_users(int fd, bool verbose, FILE *out, FILE *err)
 {
-    return run_command(fd, "LIST-USERS", "LIST-USERS", verbose, out, err);
+    return run_command(fd, "LIST-USERS", "LIST-USERS", false, verbose, out, err);
 }
 
-bool
+smcp_result
 smcp_cmd_add_user(int fd, const char *user, const char *pass, bool verbose, FILE *out, FILE *err)
 {
     char cmd[SMCP_LINE_MAX];
     char display[SMCP_LINE_MAX];
     if (!build_command(cmd, sizeof(cmd), "ADD-USER %s %s", user, pass)) {
         fprintf(err, "command too long\n");
-        return false;
+        return SMCP_RESULT_REJECTED;
     }
     if (!build_command(display, sizeof(display), "ADD-USER %s %s", user, "<password>")) {
         fprintf(err, "command too long\n");
-        return false;
+        return SMCP_RESULT_REJECTED;
     }
-    return run_command(fd, cmd, display, verbose, out, err);
+    return run_command(fd, cmd, display, false, verbose, out, err);
 }
 
-bool
+smcp_result
 smcp_cmd_del_user(int fd, const char *user, bool verbose, FILE *out, FILE *err)
 {
     char cmd[SMCP_LINE_MAX];
     if (!build_command(cmd, sizeof(cmd), "DEL-USER %s", user, NULL)) {
         fprintf(err, "command too long\n");
-        return false;
+        return SMCP_RESULT_REJECTED;
     }
-    return run_command(fd, cmd, cmd, verbose, out, err);
+    return run_command(fd, cmd, cmd, false, verbose, out, err);
 }
 
-bool
+smcp_result
 smcp_cmd_get_config(int fd, bool verbose, FILE *out, FILE *err)
 {
-    return run_command(fd, "GET-CONFIG", "GET-CONFIG", verbose, out, err);
+    return run_command(fd, "GET-CONFIG", "GET-CONFIG", false, verbose, out, err);
 }
 
-bool
+smcp_result
 smcp_cmd_set(int fd, const char *key, const char *value, bool verbose, FILE *out, FILE *err)
 {
     char cmd[SMCP_LINE_MAX];
     if (!build_command(cmd, sizeof(cmd), "SET %s %s", key, value)) {
         fprintf(err, "command too long\n");
-        return false;
+        return SMCP_RESULT_REJECTED;
     }
-    return run_command(fd, cmd, cmd, verbose, out, err);
+    return run_command(fd, cmd, cmd, false, verbose, out, err);
 }
 
-bool
+smcp_result
 smcp_cmd_log(int fd, const char *count, bool verbose, FILE *out, FILE *err)
 {
     char cmd[SMCP_LINE_MAX];
@@ -297,30 +276,31 @@ smcp_cmd_log(int fd, const char *count, bool verbose, FILE *out, FILE *err)
         snprintf(cmd, sizeof(cmd), "LOG");
     } else if (!build_command(cmd, sizeof(cmd), "LOG %s", count, NULL)) {
         fprintf(err, "command too long\n");
-        return false;
+        return SMCP_RESULT_REJECTED;
     }
-    return run_command(fd, cmd, cmd, verbose, out, err);
+    return run_command(fd, cmd, cmd, false, verbose, out, err);
 }
 
-bool
+smcp_result
 smcp_cmd_passwd(int fd, const char *pass, bool verbose, FILE *out, FILE *err)
 {
     char cmd[SMCP_LINE_MAX];
     if (!build_command(cmd, sizeof(cmd), "PASSWD %s", pass, NULL)) {
         fprintf(err, "command too long\n");
-        return false;
+        return SMCP_RESULT_REJECTED;
     }
-    return run_command(fd, cmd, "PASSWD <new-password>", verbose, out, err);
+    return run_command(fd, cmd, "PASSWD <new-password>", false,
+                       verbose, out, err);
 }
 
-bool
+smcp_result
 smcp_cmd_help(int fd, bool verbose, FILE *out, FILE *err)
 {
-    return run_command(fd, "HELP", "HELP", verbose, out, err);
+    return run_command(fd, "HELP", "HELP", false, verbose, out, err);
 }
 
-bool
+smcp_result
 smcp_cmd_quit(int fd, bool verbose, FILE *out, FILE *err)
 {
-    return run_command(fd, "QUIT", "QUIT", verbose, out, err);
+    return run_command(fd, "QUIT", "QUIT", false, verbose, out, err);
 }

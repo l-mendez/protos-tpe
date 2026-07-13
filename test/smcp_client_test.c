@@ -65,7 +65,8 @@ START_TEST(test_metrics_command_sends_line_and_reads_counted_response)
     ck_assert_ptr_nonnull(err);
 
     write_peer_response(fds[1], "+OK 2\none\ntwo\n");
-    ck_assert(smcp_cmd_metrics(fds[0], false, out, err));
+    ck_assert_int_eq(SMCP_RESULT_OK,
+                     smcp_cmd_metrics(fds[0], false, out, err));
 
     char cmd[128];
     read_peer_command(fds[1], cmd, sizeof(cmd));
@@ -93,7 +94,8 @@ START_TEST(test_add_user_sends_real_password_and_prints_only_response)
     ck_assert_ptr_nonnull(err);
 
     write_peer_response(fds[1], "+OK user added\n");
-    ck_assert(smcp_cmd_add_user(fds[0], "alice", "secret", false, out, err));
+    ck_assert_int_eq(SMCP_RESULT_OK,
+                     smcp_cmd_add_user(fds[0], "alice", "secret", false, out, err));
 
     char cmd[128];
     read_peer_command(fds[1], cmd, sizeof(cmd));
@@ -122,7 +124,8 @@ START_TEST(test_verbose_shows_command_and_raw_status)
     ck_assert_ptr_nonnull(err);
 
     write_peer_response(fds[1], "+OK 1\none\n");
-    ck_assert(smcp_cmd_metrics(fds[0], true, out, err));
+    ck_assert_int_eq(SMCP_RESULT_OK,
+                     smcp_cmd_metrics(fds[0], true, out, err));
 
     char cmd[128];
     read_peer_command(fds[1], cmd, sizeof(cmd));
@@ -132,6 +135,98 @@ START_TEST(test_verbose_shows_command_and_raw_status)
     read_file(out, text, sizeof(text));
     ck_assert_ptr_nonnull(strstr(text, "Command\n  METRICS\n"));
     ck_assert_ptr_nonnull(strstr(text, "Response\n  +OK 1\n  one\n"));
+
+    fclose(out);
+    fclose(err);
+    close(fds[0]);
+    close(fds[1]);
+}
+END_TEST
+
+START_TEST(test_server_error_keeps_session_usable)
+{
+    int fds[2];
+    ck_assert_int_eq(socketpair(AF_UNIX, SOCK_STREAM, 0, fds), 0);
+
+    FILE *out = tmpfile();
+    FILE *err = tmpfile();
+    ck_assert_ptr_nonnull(out);
+    ck_assert_ptr_nonnull(err);
+
+    write_peer_response(fds[1], "-ERR user exists\n+OK 1\nactive_connections 0\n");
+    ck_assert_int_eq(SMCP_RESULT_REJECTED,
+                     smcp_cmd_add_user(fds[0], "alice", "secret", false, out, err));
+    ck_assert_int_eq(SMCP_RESULT_OK,
+                     smcp_cmd_metrics(fds[0], false, out, err));
+
+    char commands[128];
+    read_peer_command(fds[1], commands, sizeof(commands));
+    ck_assert_ptr_nonnull(strstr(commands, "ADD-USER alice secret\n"));
+
+    char text[512];
+    read_file(err, text, sizeof(text));
+    ck_assert_ptr_nonnull(strstr(text, "user exists\n"));
+    read_file(out, text, sizeof(text));
+    ck_assert_ptr_nonnull(strstr(text, "active_connections 0\n"));
+
+    fclose(out);
+    fclose(err);
+    close(fds[0]);
+    close(fds[1]);
+}
+END_TEST
+
+START_TEST(test_auth_consumes_optional_greeting_with_response)
+{
+    int fds[2];
+    ck_assert_int_eq(socketpair(AF_UNIX, SOCK_STREAM, 0, fds), 0);
+
+    FILE *out = tmpfile();
+    FILE *err = tmpfile();
+    ck_assert_ptr_nonnull(out);
+    ck_assert_ptr_nonnull(err);
+
+    write_peer_response(fds[1], "+OK SMCP 1.0 ready\n+OK authenticated\n");
+    ck_assert_int_eq(SMCP_RESULT_OK,
+                     smcp_cmd_auth(fds[0], "admin", "secret", false, out, err));
+
+    char command[128];
+    read_peer_command(fds[1], command, sizeof(command));
+    ck_assert_str_eq("AUTH admin secret\n", command);
+
+    char text[512];
+    read_file(out, text, sizeof(text));
+    ck_assert_str_eq("authenticated\n", text);
+
+    fclose(out);
+    fclose(err);
+    close(fds[0]);
+    close(fds[1]);
+}
+END_TEST
+
+START_TEST(test_command_after_auth_rejects_unexpected_greeting)
+{
+    int fds[2];
+    ck_assert_int_eq(socketpair(AF_UNIX, SOCK_STREAM, 0, fds), 0);
+
+    FILE *out = tmpfile();
+    FILE *err = tmpfile();
+    ck_assert_ptr_nonnull(out);
+    ck_assert_ptr_nonnull(err);
+
+    write_peer_response(fds[1],
+                        "+OK authenticated\n"
+                        "+OK SMCP 1.0 ready\n"
+                        "+OK 1\nactive_connections 0\n");
+    ck_assert_int_eq(SMCP_RESULT_OK,
+                     smcp_cmd_auth(fds[0], "admin", "secret", false, out, err));
+    ck_assert_int_eq(SMCP_RESULT_TRANSPORT_ERROR,
+                     smcp_cmd_metrics(fds[0], false, out, err));
+
+    char text[512];
+    read_file(err, text, sizeof(text));
+    ck_assert_ptr_nonnull(strstr(text, "malformed response: +OK SMCP 1.0 ready\n"));
 
     fclose(out);
     fclose(err);
@@ -151,6 +246,9 @@ suite(void)
     tcase_add_test(tc, test_metrics_command_sends_line_and_reads_counted_response);
     tcase_add_test(tc, test_add_user_sends_real_password_and_prints_only_response);
     tcase_add_test(tc, test_verbose_shows_command_and_raw_status);
+    tcase_add_test(tc, test_server_error_keeps_session_usable);
+    tcase_add_test(tc, test_auth_consumes_optional_greeting_with_response);
+    tcase_add_test(tc, test_command_after_auth_rejects_unexpected_greeting);
     suite_add_tcase(s, tc);
 
     return s;

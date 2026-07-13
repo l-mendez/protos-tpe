@@ -3,7 +3,7 @@ AR=ar
 
 STD_FLAGS=-std=c11
 WARN_FLAGS=-Wall -Wextra -pedantic
-INCLUDE_FLAGS=-Isrc/shared
+INCLUDE_FLAGS=-Isrc/shared/include -Isrc/server/include -Isrc/client/include
 
 # Feature selection: the deliverable targets Linux, where POSIX.1-2008 exposes
 # sockets, pselect, sigaction and threaded name resolution. macOS gates the same

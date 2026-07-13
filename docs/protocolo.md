@@ -35,7 +35,7 @@ serán interpretadas como se describe en el RFC 2119.
 
 SMCP se transporta sobre **TCP**. El servidor DEBE escuchar en una dirección y
 puerto configurables (por defecto `127.0.0.1:8080`), independientes de los del
-servicio SOCKS5. (Ver Apéndice A para la justificación del transporte.)
+servicio SOCKS5.
 
 ### 2.2. Sesión
 
@@ -63,16 +63,13 @@ Cada sesión atraviesa dos estados:
 - **AUTH**: alcanzado tras un `AUTH` exitoso. Todos los comandos están
   disponibles.
 
-El servidor DEBE atender las sesiones SMCP de forma no bloqueante y multiplexada
-en el mismo hilo que el resto del servidor (no se permiten hilos ni I/O
-bloqueante para atender SMCP).
+El servidor DEBE atender las sesiones SMCP de forma no bloqueante.
 
 ## 3. Formato de los mensajes
 
 ### 3.1. Marco (framing)
 
-SMCP es un protocolo **de texto orientado a líneas** (ver Apéndice A para la
-justificación de texto vs. binario).
+SMCP es un protocolo **de texto orientado a líneas**.
 
 - Tanto los comandos (cliente → servidor) como las líneas de respuesta
   (servidor → cliente) terminan con el carácter **LF** (`0x0A`, `\n`).
@@ -100,8 +97,10 @@ SP        = %x20
 
 - La **palabra de comando** es *case-insensitive* (`METRICS`, `metrics` y
   `Metrics` son equivalentes). Los argumentos son *case-sensitive*.
-- Los argumentos se separan por **un** espacio. En consecuencia, los argumentos (por ejemplo nombres de usuario o contraseñas creados vía SMCP) **NO PUEDEN contener espacios**. Esta es una limitación deliberada del protocolo.
-- El número de argumentos es fijo por comando (ver Sección 4). Argumentos de más o de menos producen `-ERR invalid`.
+- Los argumentos se separan por **un** espacio. Por lo tanto, nombres de usuario
+  y contraseñas creados vía SMCP **NO PUEDEN contener espacios**.
+- El número de argumentos es fijo por comando (ver Sección 4). Argumentos de más
+  o de menos producen `-ERR invalid`.
 
 ### 3.3. Sintaxis de una respuesta
 
@@ -124,8 +123,7 @@ estado = ("+OK" / "-ERR") [ SP texto ] LF
   total_bytes 8823123
   ```
 
-  Los nombres de clave usan `snake_case` (ver Apéndice A). La elección del marco
-  prefijado por cantidad frente a un terminador `.` también se justifica allí.
+  Los nombres de clave usan `snake_case`.
 
 ## 4. Comandos
 
@@ -235,7 +233,7 @@ Ver Sección 6.
 +OK 3
 conn_timeout 60
 io_buffer_size 4096
-max_connections 1024
+max_connections 500
 ```
 
 ### 4.7. SET — modificar configuración
@@ -328,9 +326,10 @@ Claves aceptadas por `SET`/`GET-CONFIG`:
 
 Notas de semántica:
 
-- `max_connections` sólo puede **reducirse** por debajo del límite duro con el
-  que se creó el multiplexor; no puede aumentarse por encima de él. Al reducirlo,
-  las conexiones existentes NO se cierran; sólo se rechazan nuevas por encima del
+- `max_connections` sólo puede **reducirse** por debajo del límite duro derivado
+  de la capacidad del multiplexor. El cálculo contempla dos descriptores por
+  túnel y reserva espacio para listeners y management. Al reducirlo, las
+  conexiones existentes NO se cierran; sólo se rechazan nuevas por encima del
   tope.
 - `io_buffer_size` NO DEBE alterar los buffers de conexiones ya establecidas.
 
@@ -340,8 +339,7 @@ Cada registro de acceso describe un intento de conexión de un usuario del proxy
 un destino. A diferencia de las métricas (que PUEDEN ser volátiles), el registro
 de accesos DEBE ser **persistente**: el servidor lo escribe, una línea por
 intento de conexión, en un **archivo de texto** en modo *append* (su ruta se
-configura al iniciar el servidor). Así sobrevive a reinicios y queda disponible
-para consulta *offline* (p.ej. ante una queja externa recibida días después).
+configura al iniciar el servidor).
 
 El comando `LOG [n]` (Sección 4.8) devuelve las últimas `n` líneas de ese
 archivo como vista de conveniencia sobre el protocolo; el archivo sigue siendo la
@@ -414,74 +412,5 @@ S: +OK bye
 S: (cierra conexión)
 ```
 
-Cada comando restante (`LIST-USERS`, `DEL-USER`, `GET-CONFIG`, `LOG`, `PASSWD`,
-`HELP`) sigue el mismo patrón; su formato exacto está en la Sección 4.
-
 Nota: el servidor PUEDE enviar una línea de saludo `+OK SMCP 1.0 ready` al
 aceptar la conexión. El cliente DEBE tolerar su presencia o ausencia.
-
-## 11. Gramática ABNF (resumen)
-
-```abnf
-session       = greeting *interaction
-greeting      = "+OK" SP "SMCP" SP version SP "ready" LF   ; opcional
-
-interaction   = command / response
-
-command       = ( auth / metrics / list-users / add-user / del-user
-                / get-config / set / log / passwd / help / quit ) LF
-auth          = "AUTH" SP token SP token
-metrics       = "METRICS"
-list-users    = "LIST-USERS"
-add-user      = "ADD-USER" SP token SP token
-del-user      = "DEL-USER" SP token
-get-config    = "GET-CONFIG"
-set           = "SET" SP token SP token
-log           = "LOG" [ SP 1*DIGIT ]
-passwd        = "PASSWD" SP token
-help          = "HELP"
-quit          = "QUIT"
-
-response      = status-line *( data-line )
-status-line   = ( "+OK" / "-ERR" ) [ SP text ] LF
-data-line     = text LF
-token         = 1*VCHAR            ; sin espacios
-text          = *( VCHAR / SP )
-version       = 1*DIGIT "." 1*DIGIT
-
-SP            = %x20
-LF            = %x0A
-DIGIT         = %x30-39
-VCHAR         = %x21-7E
-```
-
-## Apéndice A. Decisiones de diseño
-
-- **Transporte TCP.** Una sesión administrativa es interactiva y de duración
-  prolongada (el administrador observa métricas mientras permanece conectado) y
-  requiere entrega ordenada y confiable de comandos y respuestas.
-- **Texto orientado a líneas (vs. binario).** Simplifica la depuración y la
-  inspección manual durante el desarrollo, y el volumen de datos administrativos
-  es bajo: el costo de serializar texto es despreciable frente al tráfico del
-  proxy.
-- **Marco prefijado por cantidad (vs. terminador `.` estilo POP3/SMTP).** Evita
-  la ambigüedad de un dato que comience con `.` y el consiguiente *dot-stuffing*;
-  el cliente lee la cantidad y luego exactamente esa cantidad de líneas.
-- **Claves en `snake_case`.** Los nombres de clave de métricas y configuración
-  coinciden 1:1 con los campos internos de la implementación, eliminando tablas
-  de traducción entre la especificación y el código. Se usa una única convención
-  para métricas y configuración por consistencia.
-- **Registro de accesos en archivo (persistente), métricas en memoria (volátil).**
-  La consigna permite explícitamente que las métricas sean volátiles, pero no el
-  registro de accesos, cuyo caso de uso (una queja externa que llega días después)
-  exige durabilidad. Por eso el registro se escribe *append* a un archivo —la
-  fuente de verdad— y `LOG` sólo devuelve las últimas líneas como vista. Escribir
-  a un archivo regular es compatible con el modelo no bloqueante: la restricción
-  aplica a la E/S de *sockets*, no a los archivos (que no son *pollables* y se
-  consideran siempre listos).
-- **Dos convenciones de nombres según la clase de token.** Los **comandos** usan
-  `KEBAB-CASE` en mayúsculas (son verbos del protocolo, alineados con los
-  subcomandos del cliente CLI, p.ej. `client add-user`); las **claves** de datos
-  usan `snake_case` (alineadas con los campos internos). La distinción de
-  mayúsculas/minúsculas ya separa ambas clases de tokens; el separador sólo
-  refuerza ese límite.

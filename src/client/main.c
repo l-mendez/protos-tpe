@@ -131,12 +131,14 @@ read_prompt(const char *prompt, char *buf, size_t cap, bool required)
     if (len > 0 && buf[len - 1] == '\n') {
         buf[len - 1] = '\0';
     } else {
-        int ch;
-        while ((ch = getchar()) != '\n' && ch != EOF) {
-            /* descartar el resto de la línea demasiado larga */
+        int ch = getchar();
+        if (ch != '\n' && ch != EOF) {
+            while ((ch = getchar()) != '\n' && ch != EOF) {
+                /* descartar el resto de la línea demasiado larga */
+            }
+            fprintf(stderr, "input too long\n");
+            return false;
         }
-        fprintf(stderr, "input too long\n");
-        return false;
     }
 
     if (required && buf[0] == '\0') {
@@ -200,7 +202,6 @@ print_menu(void)
     printf("6: Set config\n");
     printf("7: Logs\n");
     printf("8: Change admin password\n");
-    printf("9: Help\n");
     printf("q: Quit\n");
     fflush(stdout);
 }
@@ -210,6 +211,10 @@ read_menu_choice(int *choice)
 {
     char input[32];
     if (!read_prompt("> ", input, sizeof(input), true)) {
+        if (feof(stdin)) {
+            *choice = 'q';
+            return true;
+        }
         return false;
     }
     if (strcmp(input, "q") == 0 || strcmp(input, "Q") == 0) {
@@ -220,7 +225,7 @@ read_menu_choice(int *choice)
     char *end = NULL;
     errno = 0;
     long v = strtol(input, &end, 10);
-    if (end == input || *end != '\0' || errno == ERANGE || v < 0 || v > 9) {
+    if (end == input || *end != '\0' || errno == ERANGE || v < 1 || v > 8) {
         fprintf(stderr, "invalid option\n");
         return false;
     }
@@ -228,12 +233,12 @@ read_menu_choice(int *choice)
     return true;
 }
 
-static bool
+static smcp_result
 run_log_command(int fd, bool verbose)
 {
     char count[SMCP_TOKEN_MAX];
     if (!read_prompt("count (blank for default): ", count, sizeof(count), false)) {
-        return false;
+        return SMCP_RESULT_REJECTED;
     }
     if (count[0] == '\0') {
         return smcp_cmd_log(fd, NULL, verbose, stdout, stderr);
@@ -241,13 +246,13 @@ run_log_command(int fd, bool verbose)
     for (const char *p = count; *p != '\0'; p++) {
         if (*p < '0' || *p > '9') {
             fprintf(stderr, "count must be a non-negative decimal number\n");
-            return false;
+            return SMCP_RESULT_REJECTED;
         }
     }
     return smcp_cmd_log(fd, count, verbose, stdout, stderr);
 }
 
-static bool
+static smcp_result
 run_choice(int fd, int choice, bool verbose)
 {
     char a[SMCP_TOKEN_MAX];
@@ -259,30 +264,43 @@ run_choice(int fd, int choice, bool verbose)
         case 2:
             return smcp_cmd_list_users(fd, verbose, stdout, stderr);
         case 3:
-            return read_token_prompt("user: ", a, sizeof(a)) &&
-                   read_token_prompt("password: ", b, sizeof(b)) &&
-                   smcp_cmd_add_user(fd, a, b, verbose, stdout, stderr);
+            if (!read_token_prompt("user: ", a, sizeof(a)) ||
+                !read_token_prompt("password: ", b, sizeof(b))) {
+                return SMCP_RESULT_REJECTED;
+            }
+            return smcp_cmd_add_user(fd, a, b, verbose, stdout, stderr);
         case 4:
-            return read_token_prompt("user: ", a, sizeof(a)) &&
-                   smcp_cmd_del_user(fd, a, verbose, stdout, stderr);
+            if (!read_token_prompt("user: ", a, sizeof(a))) {
+                return SMCP_RESULT_REJECTED;
+            }
+            return smcp_cmd_del_user(fd, a, verbose, stdout, stderr);
         case 5:
             return smcp_cmd_get_config(fd, verbose, stdout, stderr);
         case 6:
-            return read_token_prompt("key: ", a, sizeof(a)) &&
-                   read_token_prompt("value: ", b, sizeof(b)) &&
-                   smcp_cmd_set(fd, a, b, verbose, stdout, stderr);
+            if (!read_token_prompt("key: ", a, sizeof(a)) ||
+                !read_token_prompt("value: ", b, sizeof(b))) {
+                return SMCP_RESULT_REJECTED;
+            }
+            return smcp_cmd_set(fd, a, b, verbose, stdout, stderr);
         case 7:
             return run_log_command(fd, verbose);
         case 8:
-            return read_token_prompt("new admin password: ", a, sizeof(a)) &&
-                   smcp_cmd_passwd(fd, a, verbose, stdout, stderr);
-        case 9:
-            return smcp_cmd_help(fd, verbose, stdout, stderr);
+            if (!read_token_prompt("new admin password: ", a, sizeof(a))) {
+                return SMCP_RESULT_REJECTED;
+            }
+            return smcp_cmd_passwd(fd, a, verbose, stdout, stderr);
         case 'q':
             return smcp_cmd_quit(fd, verbose, stdout, stderr);
         default:
-            return false;
+            return SMCP_RESULT_REJECTED;
     }
+}
+
+static bool
+should_end_session(int choice, smcp_result result, bool input_eof)
+{
+    return choice == 'q' && result != SMCP_RESULT_TRANSPORT_ERROR &&
+           (result == SMCP_RESULT_OK || input_eof);
 }
 
 int
@@ -306,12 +324,8 @@ main(const int argc, char **argv)
     if (fd < 0) {
         return 1;
     }
-    if (!smcp_read_optional_greeting(fd, stderr)) {
-        close(fd);
-        return 1;
-    }
-
-    if (!smcp_cmd_auth(fd, args.admin, args.pass, args.verbose, stdout, stderr)) {
+    if (smcp_cmd_auth(fd, args.admin, args.pass, args.verbose, stdout, stderr) !=
+        SMCP_RESULT_OK) {
         close(fd);
         return 1;
     }
@@ -325,12 +339,12 @@ main(const int argc, char **argv)
             pause_screen(interactive);
             continue;
         }
-        bool ok = run_choice(fd, choice, args.verbose);
-        if (choice == 'q' || choice == 0) {
+        smcp_result result = run_choice(fd, choice, args.verbose);
+        if (should_end_session(choice, result, feof(stdin))) {
             close(fd);
-            return ok ? 0 : 1;
+            return 0;
         }
-        if (!ok) {
+        if (result == SMCP_RESULT_TRANSPORT_ERROR) {
             close(fd);
             return 1;
         }

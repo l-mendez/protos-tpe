@@ -1,6 +1,7 @@
 #include <signal.h>
 #include <stdbool.h>
 #include <stdio.h>
+#include <sys/select.h>
 #include <unistd.h>
 
 #include "access_log.h"
@@ -13,7 +14,7 @@
 #include "socks5.h"
 #include "users.h"
 
-#define MAX_CONNECTIONS 1024
+#define SELECTOR_FD_CAPACITY FD_SETSIZE
 
 /* Cuenta las señales de terminación: la primera inicia el apagado ordenado
  * (deja de aceptar y drena), una segunda fuerza la salida inmediata. */
@@ -97,9 +98,9 @@ main(const int argc, char **argv)
     socks5_set_access_log(&access_log);
 
     /* Configuración runtime, modificable por el protocolo de monitoreo. El techo
-     * de conexiones es la capacidad con la que se crea el selector. */
+     * de conexiones se deriva del presupuesto de fds del selector. */
     static struct Config config;
-    config_init(&config, MAX_CONNECTIONS);
+    config_init(&config, SELECTOR_FD_CAPACITY);
     socks5_set_config(&config);
 
     static struct AdminCreds admin;
@@ -152,7 +153,7 @@ main(const int argc, char **argv)
                               "no se pudo inicializar el selector");
     }
 
-    runtime.selector = selector_new(MAX_CONNECTIONS);
+    runtime.selector = selector_new(SELECTOR_FD_CAPACITY);
     if (runtime.selector == NULL) {
         return server_cleanup(&runtime, 1,
                               "no se pudo crear el selector");

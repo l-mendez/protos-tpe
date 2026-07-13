@@ -13,7 +13,7 @@
 #include "selector.h"
 
 /* SOCKS5 units live in src/server, outside the shared archive; include them
- * directly. socks5.c only #includes the parser headers, so pull the parser
+ * directly. socks5.c only #includes the parser/resolver headers, so pull those
  * units in too (each .c exactly once to avoid duplicate symbols). */
 #include "../src/server/server.c"
 #include "../src/server/negotiation.c"
@@ -24,6 +24,7 @@
 #include "../src/server/access_log.c"
 #include "../src/server/config.c"
 #include "../src/server/socks5.c"
+#include "../src/server/socks5_resolver.c"
 
 static fd_selector           test_selector;
 static volatile sig_atomic_t test_stop;
@@ -1002,6 +1003,13 @@ END_TEST
 
 /* ==================================== inactivity reaper tests =========== */
 
+START_TEST(test_socks5_timeout_boundary_is_not_early)
+{
+    ck_assert(!idle_timeout_expired(101, 100, 1));
+    ck_assert(idle_timeout_expired(102, 100, 1));
+}
+END_TEST
+
 /* Una conexión idle por más de SOCKS5_INACTIVITY_TIMEOUT debe ser cosechada. */
 START_TEST(test_socks5_reap_idle_connection)
 {
@@ -1030,10 +1038,7 @@ START_TEST(test_socks5_reap_idle_connection)
 }
 END_TEST
 
-/* RELAY tunnels have a larger idle budget than handshakes.  A tunnel that is
- * older than the 60s handshake timeout but still inside the relay idle timeout
- * must remain alive. */
-START_TEST(test_socks5_reap_keeps_relay_before_relay_timeout)
+START_TEST(test_socks5_reap_keeps_relay_before_configured_timeout)
 {
     struct selector_init conf = {
         .signal         = SIGALRM,
@@ -1042,6 +1047,11 @@ START_TEST(test_socks5_reap_keeps_relay_before_relay_timeout)
     ck_assert_int_eq(selector_init(&conf), SELECTOR_SUCCESS);
     fd_selector s = selector_new(64);
     ck_assert_ptr_nonnull(s);
+
+    struct Config runtime_config;
+    config_init(&runtime_config, 64);
+    ck_assert(config_set_conn_timeout(&runtime_config, 30));
+    socks5_set_config(&runtime_config);
 
     int client_fds[2];
     int origin_fds[2];
@@ -1054,7 +1064,7 @@ START_TEST(test_socks5_reap_keeps_relay_before_relay_timeout)
     ck_assert_int_eq(selector_register(s, origin_fds[0], &socks5_handler, OP_NOOP, c),
                      SELECTOR_SUCCESS);
     c->stm.current = &socks5_states[RELAY];
-    c->last_activity = monotonic_now() - SOCKS5_INACTIVITY_TIMEOUT - 1;
+    c->last_activity = monotonic_now() - 10;
 
     reap_last_sweep = 0;
     socks5_reap_idle(s);
@@ -1066,6 +1076,7 @@ START_TEST(test_socks5_reap_keeps_relay_before_relay_timeout)
     selector_unregister_fd(s, cfd);
     ck_assert_uint_eq(0, socks5_active_connections());
 
+    socks5_set_config(NULL);
     close(client_fds[1]);
     close(origin_fds[1]);
     selector_destroy(s);
@@ -1073,7 +1084,7 @@ START_TEST(test_socks5_reap_keeps_relay_before_relay_timeout)
 }
 END_TEST
 
-START_TEST(test_socks5_reap_closes_idle_relay_after_relay_timeout)
+START_TEST(test_socks5_reap_closes_relay_at_configured_timeout)
 {
     struct selector_init conf = {
         .signal         = SIGALRM,
@@ -1082,6 +1093,11 @@ START_TEST(test_socks5_reap_closes_idle_relay_after_relay_timeout)
     ck_assert_int_eq(selector_init(&conf), SELECTOR_SUCCESS);
     fd_selector s = selector_new(64);
     ck_assert_ptr_nonnull(s);
+
+    struct Config runtime_config;
+    config_init(&runtime_config, 64);
+    ck_assert(config_set_conn_timeout(&runtime_config, 30));
+    socks5_set_config(&runtime_config);
 
     int client_fds[2];
     int origin_fds[2];
@@ -1094,16 +1110,26 @@ START_TEST(test_socks5_reap_closes_idle_relay_after_relay_timeout)
     ck_assert_int_eq(selector_register(s, origin_fds[0], &socks5_handler, OP_NOOP, c),
                      SELECTOR_SUCCESS);
     c->stm.current = &socks5_states[RELAY];
-    c->last_activity = monotonic_now() - SOCKS5_RELAY_IDLE_TIMEOUT - 1;
+    c->last_activity = monotonic_now() - 31;
+
+    int cfd = c->client_fd;
+    int ofd = c->origin_fd;
 
     reap_last_sweep = 0;
     socks5_reap_idle(s);
-    ck_assert_uint_eq(0, socks5_active_connections());
+    size_t active = socks5_active_connections();
+
+    if (active != 0) {
+        selector_unregister_fd(s, ofd);
+        selector_unregister_fd(s, cfd);
+    }
+    socks5_set_config(NULL);
 
     close(client_fds[1]);
     close(origin_fds[1]);
     selector_destroy(s);
     selector_close();
+    ck_assert_uint_eq(0, active);
 }
 END_TEST
 
@@ -1428,7 +1454,7 @@ START_TEST(test_socks5_resolver_pool_rejects_when_capacity_is_exhausted)
 
     ck_assert(socks5_resolver_pool_start());
     resolver_jobs_in_system = RESOLVER_MAX_JOBS;
-    ck_assert(!resolver_queue_job(c, "localhost", "80"));
+    ck_assert(!socks5_resolver_queue_job(c, "localhost", "80"));
     resolver_jobs_in_system = 0;
     socks5_resolver_pool_stop();
 
@@ -1580,7 +1606,7 @@ END_TEST
  * the worker thread never reads c->client_fd (which the main thread rewrites
  * without the resolver lock).
  *
- * The pool is flagged as started so resolver_queue_job enqueues the job without
+ * The pool is flagged as started so socks5_resolver_queue_job enqueues the job without
  * spawning real workers: it sits unprocessed, letting us inspect the wakeup
  * target it captured without a worker racing to wake a selector this test never
  * runs. close() then cancels and frees the still-queued job. */
@@ -1604,7 +1630,7 @@ START_TEST(test_socks5_resolver_job_captures_notify_target)
     resolver_pool_started = true;
     pthread_mutex_unlock(&resolver_mutex);
 
-    ck_assert(resolver_queue_job(c, "host.example", "443"));
+    ck_assert(socks5_resolver_queue_job(c, "host.example", "443"));
 
     pthread_mutex_lock(&resolver_mutex);
     struct resolver_job *job = c->resolver_job;
@@ -1695,9 +1721,10 @@ static Suite *socks5_suite(void)
     tcase_add_test(tc, test_socks5_connect_refused);
     tcase_add_test(tc, test_socks5_fqdn_resolution_failure_is_general_failure);
     tcase_add_test(tc, test_socks5_fqdn_connect_and_relay);
+    tcase_add_test(tc, test_socks5_timeout_boundary_is_not_early);
     tcase_add_test(tc, test_socks5_reap_idle_connection);
-    tcase_add_test(tc, test_socks5_reap_keeps_relay_before_relay_timeout);
-    tcase_add_test(tc, test_socks5_reap_closes_idle_relay_after_relay_timeout);
+    tcase_add_test(tc, test_socks5_reap_keeps_relay_before_configured_timeout);
+    tcase_add_test(tc, test_socks5_reap_closes_relay_at_configured_timeout);
     tcase_add_test(tc, test_socks5_reap_req_connecting_sends_failure_reply);
     tcase_add_test(tc, test_socks5_reap_req_resolve_timeout_sends_failure_reply);
     tcase_add_test(tc, test_socks5_reap_req_resolve_timeout_releases_pending_job);

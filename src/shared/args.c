@@ -12,13 +12,14 @@ static unsigned short
 port(const char* s)
 {
     char* end = 0;
+    errno = 0;
     const long sl = strtol(s, &end, 10);
 
     if (end == s || '\0' != *end
         || ((LONG_MIN == sl || LONG_MAX == sl) && ERANGE == errno)
-        || sl < 0 || sl > USHRT_MAX)
+        || sl < 1 || sl > USHRT_MAX)
     {
-        fprintf(stderr, "port should in in the range of 1-65536: %s\n", s);
+        fprintf(stderr, "el puerto debe estar en el rango 1-65535: %s\n", s);
         exit(1);
         return 1;
     }
@@ -44,28 +45,19 @@ user(char* s, struct User* user)
 }
 
 static void
-version(void)
-{
-    fprintf(stderr, "socks5v version 0.0\n"
-            "ITBA Protocolos de Comunicación 2025/1 -- Grupo X\n"
-            "AQUI VA LA LICENCIA\n");
-}
-
-static void
 usage(const char* progname, int users)
 {
     fprintf(stderr,
-            "Usage: %s [OPTION]...\n"
+            "Uso: %s [OPCIÓN]...\n"
             "\n"
             "   -h               Imprime la ayuda y termina.\n"
             "   -l <SOCKS addr>  Dirección donde servirá el proxy SOCKS.\n"
             "   -L <conf  addr>  Dirección donde servirá el servicio de management.\n"
-            "   -p <SOCKS port>  Puerto entrante conexiones SOCKS.\n"
-            "   -P <conf port>   Puerto entrante conexiones configuracion\n"
-            "   -u <name>:<pass> Usuario y contraseña de usuario que puede usar el proxy. Hasta %d.\n"
-            "   -a <name>:<pass> Usuario y contraseña de usuario administrador\n"
+            "   -p <SOCKS port>  Puerto de escucha del proxy SOCKS.\n"
+            "   -P <conf port>   Puerto de escucha del servicio de management.\n"
+            "   -u <name>:<pass> Usuario y contraseña habilitados para usar el proxy. Hasta %d.\n"
+            "   -a <name>:<pass> Usuario y contraseña del administrador.\n"
             "   -o <path>        Archivo de registro de accesos (default: access.log).\n"
-            "   -v               Imprime información sobre la versión versión y termina.\n"
 
             "\n",
             progname, users);
@@ -87,6 +79,7 @@ parse_args(const int argc, char** argv, struct socks5args* args)
 
     int c;
     int nusers = 0;
+    opterr = 0;
 
     while (true)
     {
@@ -95,7 +88,7 @@ parse_args(const int argc, char** argv, struct socks5args* args)
             {0, 0, 0, 0}
         };
 
-        c = getopt_long(argc, argv, "hl:L:p:P:u:a:o:v", long_options, &option_index);
+        c = getopt_long(argc, argv, "hl:L:p:P:u:a:o:", long_options, &option_index);
         if (c == -1)
             break;
 
@@ -119,7 +112,7 @@ parse_args(const int argc, char** argv, struct socks5args* args)
         case 'u':
             if (nusers >= MAX_USERS)
             {
-                fprintf(stderr, "maximun number of command line users reached: %d.\n", MAX_USERS);
+                fprintf(stderr, "maximum number of command line users reached: %d.\n", MAX_USERS);
                 exit(1);
             }
             else
@@ -134,17 +127,18 @@ parse_args(const int argc, char** argv, struct socks5args* args)
         case 'o':
             args->access_log_path = optarg;
             break;
-        case 'v':
-            version();
-            exit(0);
         default:
-            fprintf(stderr, "unknown argument %d.\n", c);
+            if (optopt != 0) {
+                fprintf(stderr, "opción inválida o incompleta: -%c\n", optopt);
+            } else {
+                fprintf(stderr, "opción inválida.\n");
+            }
             exit(1);
         }
     }
     if (optind < argc)
     {
-        fprintf(stderr, "argument not accepted: ");
+        fprintf(stderr, "argumento no aceptado: ");
         while (optind < argc)
         {
             fprintf(stderr, "%s ", argv[optind++]);

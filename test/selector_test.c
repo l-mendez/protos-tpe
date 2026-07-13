@@ -6,7 +6,7 @@
 #define INITIAL_SIZE ((size_t) 1024)
 
 // para poder testear las funciones estaticas
-#include "selector.c"
+#include "../src/shared/selector.c"
 
 START_TEST (test_selector_error) {
     const selector_status data[] = {
