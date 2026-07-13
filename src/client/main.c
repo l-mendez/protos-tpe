@@ -209,6 +209,10 @@ read_menu_choice(int *choice)
 {
     char input[32];
     if (!read_prompt("> ", input, sizeof(input), true)) {
+        if (feof(stdin)) {
+            *choice = 'q';
+            return true;
+        }
         return false;
     }
     if (strcmp(input, "q") == 0 || strcmp(input, "Q") == 0) {

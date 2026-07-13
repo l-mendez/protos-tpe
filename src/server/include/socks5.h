@@ -72,8 +72,8 @@ socks5_active_connections(void);
 
 /**
  * Recorre las conexiones activas y cierra las que llevan más de
- * SOCKS5_INACTIVITY_TIMEOUT segundos sin actividad.  Debe llamarse desde el
- * loop principal después de cada selector_select.
+ * conn_timeout segundos sin actividad. Debe llamarse desde el loop principal
+ * después de cada selector_select.
  */
 void
 socks5_reap_idle(fd_selector s);

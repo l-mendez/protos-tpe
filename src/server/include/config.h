@@ -22,7 +22,7 @@
 #define CONFIG_IO_BUFFER_SIZE_MAX    65536u
 
 struct Config {
-    uint32_t conn_timeout;         /* inactividad (s) antes de cerrar (handshake) */
+    uint32_t conn_timeout;         /* inactividad (s) antes de cerrar SOCKS5 */
     uint32_t io_buffer_size;       /* buffer de relay por conexión nueva (bytes) */
     uint32_t max_connections;      /* tope blando de conexiones concurrentes */
     uint32_t max_connections_hard; /* techo: capacidad del selector, no superable */

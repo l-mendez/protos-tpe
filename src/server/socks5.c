@@ -59,11 +59,8 @@ static struct socks5_conn *conn_list = NULL;
 /** Métricas del proceso, inyectadas por main() vía socks5_set_metrics(). */
 static struct Metrics *metrics = NULL;
 
-/** Tiempo máximo (en segundos) sin actividad para fases de handshake/connect. */
+/** Timeout por defecto (en segundos) cuando no hay configuración runtime. */
 #define SOCKS5_INACTIVITY_TIMEOUT 60
-
-/** Tiempo máximo (en segundos) sin actividad para túneles RELAY establecidos. */
-#define SOCKS5_RELAY_IDLE_TIMEOUT 900
 
 /* Inserta un conn al frente de la lista. */
 static void conn_list_push(struct socks5_conn *c)
@@ -917,15 +914,20 @@ static time_t monotonic_now(void)
     return ts.tv_sec;
 }
 
+static bool idle_timeout_expired(time_t now, time_t last_activity, time_t timeout)
+{
+    return now - last_activity > timeout;
+}
+
 /* Throttle del reaper: última vez que se recorrió la lista (evita recorrer más
  * de una vez por segundo). A nivel de archivo para que los tests puedan
  * resetearlo entre casos. */
 static time_t reap_last_sweep = 0;
 
-/* Cierra conexiones que llevan más de SOCKS5_INACTIVITY_TIMEOUT segundos sin
- * actividad.  Se invoca desde el loop principal después de cada selector_select,
- * así que corre a lo sumo cada select_timeout (10s).  Usa un throttle estático
- * para no recorrer la lista más de una vez por segundo. */
+/* Cierra conexiones que superan el conn_timeout vigente sin actividad. Se invoca
+ * desde el loop principal después de cada selector_select, así que corre a lo
+ * sumo cada select_timeout (10s). Usa un throttle estático para no recorrer la
+ * lista más de una vez por segundo. */
 void socks5_reap_idle(fd_selector s)
 {
     const time_t now = monotonic_now();
@@ -956,9 +958,8 @@ void socks5_reap_idle(fd_selector s)
             continue;
         }
 
-        const time_t timeout = (st == RELAY) ? SOCKS5_RELAY_IDLE_TIMEOUT
-                                             : (time_t)effective_conn_timeout();
-        if (now - c->last_activity < timeout) {
+        const time_t timeout = (time_t)effective_conn_timeout();
+        if (!idle_timeout_expired(now, c->last_activity, timeout)) {
             c = nxt;
             continue;
         }
