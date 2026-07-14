@@ -1,4 +1,0 @@
-# TODO
-
-- [ ] stress tests
-- [ ] informe
