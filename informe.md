@@ -531,9 +531,9 @@ En ambos entornos se cumplió el gate de capacidad: se establecieron y verificar
 
 Para distinguir el throughput agregado del rendimiento individual, se calculó también la degradación del throughput promedio por túnel respecto del caso de una única conexión:
 
-```text
-degradación = (1 - (T_n / n) / T_1) × 100
-```
+$$
+degradación = (1 - \frac{T_n / n}{T_1} ) \cdot  100
+$$
 
 Donde `T_n` es el throughput agregado con `n` conexiones y `T_1` es el throughput con una conexión.
 
