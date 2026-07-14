@@ -510,7 +510,49 @@ Un escenario falla ante conexiones rechazadas, timeouts, corrupción de datos, m
 make stress     # requiere Linux; en macOS, correrlo dentro del entorno Docker (§8.3)
 ```
 
-Las mediciones se hacen sobre loopback con los tres procesos compartiendo la máquina, por lo que sirven para comparar la degradación entre niveles de concurrencia, no como capacidad absoluta en una red real.
+#### Resultados de las últimas corridas
+
+La batería se ejecutó el 14 de julio de 2026 en dos entornos Linux. Ambas corridas completaron todos los escenarios con resultado global `pass` y sin fallos:
+
+| Entorno | Fecha UTC | Sistema | Límite de archivos abiertos | Resultado |
+|---|---|---|---:|---|
+| LinuxKit | `2026-07-14T17:22:16Z` | `Linux 6.12.76-linuxkit aarch64` | 1048576 | pass, sin fallos |
+| Pampero | `2026-07-14T17:25:43Z` | `Linux 7.0.9-arch1-1 x86_64` | 524288 | pass, sin fallos |
+
+En ambos entornos se cumplió el gate de capacidad: se establecieron y verificaron 500 conexiones simultáneas, y el máximo observado fue de 500 conexiones.
+
+| Concurrencia | Mediana MiB/s LinuxKit | Mediana MiB/s Pampero | Estado |
+|---:|---:|---:|---|
+| 1 | 11.514 | 8.857 | pass en ambos |
+| 50 | 29.106 | 26.101 | pass en ambos |
+| 100 | 62.190 | 52.705 | pass en ambos |
+| 250 | 113.908 | 100.018 | pass en ambos |
+| 500 | 145.736 | 119.686 | pass en ambos |
+
+Para distinguir el throughput agregado del rendimiento individual, se calculó también la degradación del throughput promedio por túnel respecto del caso de una única conexión:
+
+```text
+degradación = (1 - (T_n / n) / T_1) × 100
+```
+
+Donde `T_n` es el throughput agregado con `n` conexiones y `T_1` es el throughput con una conexión.
+
+| Concurrencia | Degradación por túnel LinuxKit | Degradación por túnel Pampero |
+|---:|---:|---:|
+| 1 | 0.00% | 0.00% |
+| 50 | 94.94% | 94.11% |
+| 100 | 94.60% | 94.05% |
+| 250 | 96.04% | 95.48% |
+| 500 | 97.47% | 97.30% |
+
+El escenario soak también finalizó correctamente en los dos entornos:
+
+| Entorno | Estado | RSS inicial/máximo/final | CPU del proxy |
+|---|---|---:|---:|
+| LinuxKit | pass | `6308 / 6308 / 6308 KiB` | `0.670 s` |
+| Pampero | pass | `6740 / 6740 / 6740 KiB` | `0.860 s` |
+
+El throughput informado es agregado por dirección para los 64 MiB distribuidos entre las conexiones concurrentes; no representa el rendimiento individual de cada túnel. Las mediciones se hicieron sobre loopback, con generador, proxy y backend compartiendo la máquina, por lo que permiten observar el comportamiento al aumentar la concurrencia, pero no representan capacidad absoluta en una red real ni permiten comparar directamente el rendimiento de dos equipos distintos. La batería cubre IPv4 con autenticación RFC 1929 y no cubre destinos FQDN ni resolución DNS.
 
 ---
 
@@ -816,4 +858,3 @@ El servidor expone, en el mismo proceso y event loop pero en otro socket pasivo,
 
 - RFC 1928 — SOCKS Protocol Version 5.
 - RFC 1929 — Username/Password Authentication for SOCKS V5. 
-
