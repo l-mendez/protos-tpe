@@ -6,9 +6,9 @@
 **Integrantes**  
 
 Rocco Perrone — Legajo 65628  
-Bautista Pessagno — Legajo 00000  
-Rodrigo Hernandez — Legajo 00000  
-Lorenzo Mendez — Legajo 00000  
+Bautista Pessagno — Legajo 65101  
+Rodrigo Hernandez — Legajo 65522  
+Lorenzo Mendez — Legajo 65147 
 
 El trabajo consiste en un servidor proxy SOCKS versión 5 (RFC 1928) con autenticación usuario/contraseña (RFC 1929), acompañado de un protocolo propio de monitoreo y configuración en caliente (SMCP) y su cliente de línea de comandos. El servidor atiende múltiples conexiones concurrentes con E/S no bloqueante en un único hilo.
 
@@ -46,13 +46,13 @@ El proyecto produce dos ejecutables:
 | `bin/client` | Cliente de monitoreo y configuración que habla SMCP.                        |
 
 
-Servidor (`bin/server`). Implementa el comando `CONNECT` de SOCKS5 sobre destinos IPv4, IPv6 y FQDN, con autenticación usuario/contraseña (RFC 1929) contra un almacén de usuarios modificable en caliente. Atiende hasta 500 conexiones concurrentes (cada conexión consume dos descriptores sobre un presupuesto de 1024) con E/S no bloqueante multiplexada en un solo hilo.
+Servidor (`bin/server`). Implementa el comando `CONNECT` de SOCKS5 sobre destinos IPv4, IPv6 y FQDN, con autenticación usuario/contraseña (RFC 1929) contra un almacén de usuarios modificable durante la ejecución. Atiende hasta 500 conexiones concurrentes (cada conexión consume dos descriptores sobre un presupuesto de 1024) con E/S no bloqueante multiplexada en un solo hilo.
 
 La única tarea que se ejecuta fuera de ese hilo es la resolución DNS. Como `getaddrinfo(3)` es una llamada bloqueante, ejecutarla en el hilo del servidor congelaría a todas las conexiones mientras se resuelve un nombre. Para evitarlo, el servidor mantiene un pool acotado de hilos trabajadores dedicado exclusivamente a resolver FQDNs: la conexión encola el pedido, sigue su vida en el hilo principal, y cuando la resolución termina el resultado se le entrega de vuelta al selector como un evento más. Que el pool sea acotado (una cantidad fija de hilos, con cola de trabajos pendientes) pone un techo al costo de la concurrencia aun bajo ráfagas de conexiones. 
 
 Además el servidor mantiene métricas de operación en memoria, escribe un registro de accesos persistente en archivo (una línea por intento de conexión) y expone el servicio SMCP en un socket independiente. Soporta apagado ordenado: ante `SIGINT`/`SIGTERM` deja de aceptar y drena las conexiones vivas. La arquitectura interna se describe en la [Sección 11](#11-documento-de-diseño-del-proyecto).
 
-Cliente (`bin/client`). Aplicación interactiva de consola que se conecta al servicio SMCP, se autentica como administrador y ofrece un menú con las operaciones del protocolo: consultar métricas, listar/agregar/eliminar usuarios del proxy, leer y modificar la configuración, consultar el registro de accesos y cambiar la contraseña del administrador. Con `-v` muestra además el comando SMCP crudo enviado y la línea de estado recibida, útil para depuración.
+Cliente (`bin/client`). Aplicación interactiva CLI que se conecta al servicio SMCP, se autentica como administrador y ofrece un menú con las operaciones del protocolo: consultar métricas, listar/agregar/eliminar usuarios del proxy, leer y modificar la configuración, consultar el registro de accesos y cambiar la contraseña del administrador. Con `-v` muestra además el comando SMCP crudo enviado y la línea de estado recibida, útil para depuración.
 
 ### 2.2. Especificación del protocolo de monitoreo (SMCP)
 
@@ -356,7 +356,7 @@ Ejemplo:
 
 #### 2.2.8. Códigos y mensajes de error
 
-Todo error se reporta con una línea `-ERR <texto>`. Los codigos siguientes son transversales a todos los comandos:
+Todo error se reporta con una línea `-ERR <texto>`. Los códigos siguientes son transversales a todos los comandos:
 
 
 | Texto               | Situación                                |
@@ -401,57 +401,21 @@ Cada comando restante (`LIST-USERS`, `DEL-USER`, `GET-CONFIG`, `LOG`, `PASSWD`, 
 
 Nota: el servidor PUEDE enviar una línea de saludo `+OK SMCP 1.0 ready` al aceptar la conexión; esta implementación no la envía. El cliente DEBE tolerar su presencia o ausencia.
 
-#### 2.2.11. Gramática ABNF (resumen)
 
-```abnf
-session       = greeting *interaction
-greeting      = "+OK" SP "SMCP" SP version SP "ready" LF   ; opcional
-
-interaction   = command / response
-
-command       = ( auth / metrics / list-users / add-user / del-user
-                / get-config / set / log / passwd / help / quit ) LF
-auth          = "AUTH" SP token SP token
-metrics       = "METRICS"
-list-users    = "LIST-USERS"
-add-user      = "ADD-USER" SP token SP token
-del-user      = "DEL-USER" SP token
-get-config    = "GET-CONFIG"
-set           = "SET" SP token SP token
-log           = "LOG" [ SP 1*DIGIT ]
-passwd        = "PASSWD" SP token
-help          = "HELP"
-quit          = "QUIT"
-
-response      = status-line *( data-line )
-status-line   = ( "+OK" / "-ERR" ) [ SP text ] LF
-data-line     = text LF
-token         = 1*VCHAR            ; sin espacios
-text          = *( VCHAR / SP )
-version       = 1*DIGIT "." 1*DIGIT
-
-SP            = %x20
-LF            = %x0A
-DIGIT         = %x30-39
-VCHAR         = %x21-7E
-```
-
-#### 2.2.12. Decisiones de diseño del protocolo
+#### 2.2.11. Decisiones de diseño del protocolo
 
 - Transporte TCP. Una sesión administrativa es interactiva y de duración prolongada (el administrador observa métricas mientras permanece conectado) y requiere entrega ordenada y confiable de comandos y respuestas.
 - Texto orientado a líneas (vs. binario). Simplifica la depuración y la inspección manual durante el desarrollo, y el volumen de datos administrativos es bajo: el costo de serializar texto es despreciable frente al tráfico del proxy.
-- Marco prefijado por cantidad (vs. terminador `.` estilo POP3/SMTP). Evita la ambigüedad de un dato que comience con `.` y el consiguiente dot-stuffing; el cliente lee la cantidad y luego exactamente esa cantidad de líneas.
-- Claves en `snake_case`. Los nombres de clave de métricas y configuración coinciden 1:1 con los campos internos de la implementación, eliminando tablas de traducción entre la especificación y el código. Se usa una única convención para métricas y configuración por consistencia.
-- Registro de accesos en archivo (persistente), métricas en memoria (volátil). El caso de uso del registro (una queja externa que llega días después) exige durabilidad; por eso se escribe append a un archivo —la fuente de verdad— y `LOG` sólo devuelve las últimas líneas como vista. Escribir a un archivo regular es compatible con el modelo no bloqueante: la restricción aplica a la E/S de sockets, no a los archivos (que no son pollables y se consideran siempre listos).
+- Claves en `snake_case`. Los nombres de clave de métricas y configuración coinciden 1:1 con los campos internos de la implementación. Se usa una única convención para métricas y configuración por consistencia.
 - Dos convenciones de nombres según la clase de token. Los comandos usan `KEBAB-CASE` en mayúsculas (son verbos del protocolo, alineados con los subcomandos del cliente CLI); las claves de datos usan `snake_case` (alineadas con los campos internos). La distinción de mayúsculas/minúsculas ya separa ambas clases de tokens; el separador sólo refuerza ese límite.
 
 ---
 
 ## 3. Problemas encontrados durante el diseño y la implementación
 
-Latencia en el relay por el orden de despacho. En la primera versión del relay, los bytes leídos de un extremo quedaban en el buffer hasta que el selector reportara al otro extremo listo para escribir, en una iteración posterior del loop: cada chunk pagaba una vuelta extra de `pselect` y syscalls de más. Se corrigió de la siguiente manera, tras cada lectura se intenta escribir inmediatamente lo bufferizado al otro extremo, y sólo si el `send` no completa (`EWOULDBLOCK`) se delega el resto al evento de escritura del selector.
+Latencia en el relay por el orden de despacho. En la primera versión del relay, los bytes leídos de un extremo quedaban en el buffer hasta que el selector reportara al otro extremo como listo para escribir en una iteración posterior del loop. Esto agregaba una pasada adicional por pselect(2) antes de reenviar cada bloque de datos, aun cuando el socket destino ya pudiera aceptar escritura. Se corrigió haciendo que, después de cada lectura, el relay intente escribir inmediatamente los bytes bufferizados hacia el otro extremo. Sólo si el send(2) no puede completar por EWOULDBLOCK, el remanente queda pendiente para el próximo evento de escritura del selector.
 
-Sincronización con el pool de DNS. La resolución en hilos aparte introdujo los únicos problemas de concurrencia real del proyecto. Hubo que definir con cuidado qué campos de la conexión puede tocar cada hilo y bajo qué lock, porque el hilo principal y los trabajadores comparten el `conn`; y resolver la cancelación: si la conexión se cierra mientras su `getaddrinfo` sigue en vuelo, el trabajo debe marcarse como cancelado y su resultado descartarse sin que ningún hilo escriba sobre memoria liberada. La notificación del resultado al selector (vía señal y `handle_block`) permitió que toda esa complejidad quede encapsulada: los handlers de la máquina de estados nunca ven concurrencia.
+Sincronización con el pool de DNS. La resolución en hilos aparte introdujo los únicos problemas de concurrencia real del proyecto. Hubo que definir con cuidado qué campos de la conexión puede tocar cada hilo y bajo qué lock, porque el hilo principal y los trabajadores comparten el `conn`; y resolver la cancelación: si la conexión se cierra mientras su `getaddrinfo` aun no terminó, el trabajo debe marcarse como cancelado y su resultado descartarse sin que ningún hilo escriba sobre memoria liberada. La notificación del resultado al selector (vía señal y `handle_block`) permitió que toda esa complejidad quede encapsulada: los handlers de la máquina de estados nunca ven concurrencia.
 
 El techo de `select(2)`. Al construir la batería de stress apareció el límite de `FD_SETSIZE` (1024 descriptores): con dos descriptores por conexión más los reservados, el servidor admite hasta 500 conexiones simultáneas. El límite obligó además a presupuestar descriptores explícitamente (`max_connections` se deriva de esa cuenta) y a que el generador de carga y el backend de prueba usen `poll(2)`, para que el techo medido fuera el del servidor y no el de las herramientas que lo miden.
 
@@ -467,19 +431,20 @@ Resolución DNS. El pool de resolución tiene una cantidad fija de hilos (4): a 
 
 ## 5. Posibles extensiones
 
-Persistencia de usuarios y configuración. La contracara directa de la limitación de la Sección 4: guardar el almacén de usuarios y los parámetros modificados en caliente en un archivo de configuración —con las contraseñas hasheadas, al estilo `htpasswd`— que el servidor lea al arrancar y reescriba ante cada `ADD-USER`/`DEL-USER`/`SET`/`PASSWD`. Así los cambios administrativos sobrevivirían a los reinicios sin depender de la línea de comandos, y el cambio de contraseña del administrador dejaría de ser efímero.
+Persistencia de usuarios y configuración. La contracara directa de la limitación de la Sección 4: guardar el almacén de usuarios y los parámetros modificados en caliente en un archivo de configuración —con las contraseñas hasheadas, al estilo `htpasswd`— que el servidor lea al arrancar y reescriba ante cada `ADD-USER`/`DEL-USER`/`SET`/`PASSWD`. Así los cambios administrativos sobrevivirían a los reinicios sin depender de la línea de comandos, y el cambio de contraseña del administrador dejaría de ser efímero. También el hecho de poder configurar la cantidad de usuarios que pueden haber en el servidor
 
-Mejor observabilidad. El diseño de SMCP ya lo permite sin romper compatibilidad. Candidatas naturales: bytes y conexiones por usuario, destinos más frecuentes, errores de conexión por tipo, y tiempos de resolución DNS. Sobre eso podría sumarse un `LOG` con filtro por usuario y un modo *subscribe* en el que el servidor empuje métricas periódicamente a la sesión, evitando el polling.
+Mejor observabilidad. El diseño de SMCP ya lo permite sin romper compatibilidad. Candidatas naturales: bytes y conexiones por usuario, destinos más frecuentes, errores de conexión por tipo, y tiempos de resolución DNS. Sobre eso podría sumarse un `LOG` con filtro por usuario.
 
-Rate limiting por usuario. Con la autenticación y la contabilización de bytes ya presentes, el servidor tiene la información necesaria para imponer cuotas por usuario: un tope de conexiones simultáneas o de bytes por unidad de tiempo. La aplicación encaja naturalmente en el modelo existente —al exceder la cuota se deja de pedir `OP_READ` sobre esa conexión, la misma contrapresión que ya ejercen los buffers llenos— y las cuotas serían un parámetro más de `SET`/`GET-CONFIG`.
+Rate limiting por usuario. Con la autenticación y la contabilización de bytes ya presentes, el servidor tiene la información necesaria para imponer cuotas por usuario: un tope de conexiones simultáneas o de bytes por unidad de tiempo. Cuando un usuario excede la cuota, se deja de pedir `OP_READ` sobre esa conexión. Dichas cuotas podrian ser configuradas con el protocolo *smcp* a traves del comando `SET` y aparecer en la salida de `GET-CONFIG`
+
 
 ---
 
 ## 6. Conclusiones
 
-El trabajo confirma que el modelo de un solo hilo con E/S no bloqueante es suficiente —y eficiente— para una carga I/O-bound como la de un proxy: el servidor pasa la mayor parte del tiempo esperando a la red, y un único hilo multiplexado atiende esa espera para cientos de conexiones sin el costo en memoria y cambios de contexto de un hilo por conexión. La batería de estrés lo respalda: 500 túneles simultáneos con integridad de datos verificada, sostenidos durante un minuto con consumo de recursos estable. El techo, de hecho, no lo puso el modelo sino la interfaz elegida para implementarlo (`select(2)` y su `FD_SETSIZE`).
+El trabajo confirma que el modelo de un solo hilo con E/S no bloqueante es suficiente y eficiente para una carga I/O-bound como la de un proxy: el servidor pasa la mayor parte del tiempo esperando a la red, y un único hilo multiplexado atiende esa espera para cientos de conexiones sin el costo en memoria y cambios de contexto de un hilo o proceso por conexión. Las pruebas de estrés lo respaldan: 500 túneles simultáneos con integridad de datos verificada, sostenidos durante un minuto con consumo de recursos estable. El techo, de hecho, no lo puso el modelo sino la interfaz elegida para implementarlo (`select(2)` y su `FD_SETSIZE`).
 
-Pero la afirmación vale exactamente para eso: trabajo I/O-bound expresable como eventos no bloqueantes. Todo lo que no puede ceder el control al event loop —cómputo intensivo, o llamadas cuya interfaz es inherentemente bloqueante— sigue necesitando hilos. En este proyecto ese caso existió desde el inicio: la resolución de FQDNs, donde `getaddrinfo(3)` no ofrece variante no bloqueante y ejecutarla en el hilo del selector congelaría a todas las conexiones por culpa de una sola. La respuesta no fue abandonar el modelo sino confinarlo: un pool acotado de hilos ejecuta el trabajo bloqueante y reingresa el resultado al selector como un evento más, de modo que la concurrencia queda encapsulada en un módulo y el resto del servidor conserva la simplicidad de razonar en un solo hilo. La conclusión general es esa: el modelo de eventos debe ser la regla, y los hilos, la excepción deliberada y acotada para lo que el modelo no puede expresar.
+Pero la afirmación vale exactamente para eso: trabajo I/O-bound expresable como eventos no bloqueantes. Todo lo que no puede ceder el control al event loop como llamadas cuya interfaz es inherentemente bloqueante, sigue necesitando hilos. En este proyecto ese caso existió desde el inicio: la resolución de FQDNs, donde `getaddrinfo(3)` no ofrece variante no bloqueante y ejecutarla en el hilo del selector congelaría a todas las conexiones por culpa de una sola. La respuesta no fue abandonar el modelo sino complementarlo con un pool acotado de hilos que ejecuta el trabajo bloqueante y reingresa el resultado al selector como un evento más, de modo que la concurrencia queda encapsulada en un módulo y el resto del servidor conserva la simplicidad de razonar en un solo hilo. La conclusión general es esa: el modelo de eventos debe ser la regla, y los hilos, la excepción.
 
 ---
 
@@ -487,7 +452,7 @@ Pero la afirmación vale exactamente para eso: trabajo I/O-bound expresable como
 
 ### 7.1. Pruebas unitarias
 
-El proyecto incluye una batería de pruebas unitarias con el framework [Check](https://libcheck.github.io/check/), una por módulo (buffer, selector, stm, parsers de negociación/auth/request, handler SOCKS5, SMCP y su parser, usuarios, métricas, configuración, registro de accesos, utilidades de red, parser genérico y cliente):
+El proyecto incluye pruebas unitarias con el framework [Check](https://libcheck.github.io/check/), una por módulo (buffer, selector, stm, parsers de negociación/auth/request, handler SOCKS5, SMCP y su parser, usuarios, métricas, configuración, registro de accesos, utilidades de red, parser genérico y cliente):
 
 ```sh
 make test       # compila y ejecuta toda la batería bajo bin/test/
@@ -495,15 +460,27 @@ make test       # compila y ejecuta toda la batería bajo bin/test/
 
 ### 7.2. Pruebas funcionales
 
-Con el servidor corriendo (`./bin/server -u pablito:pass1234 -a admin:s3cret`) se verifica con cualquier cliente SOCKS5:
+Correr el servidor en una terminal con:
 
 ```sh
-# destino FQDN: socks5h delega la resolución DNS en el proxy
+make
+./bin/server -u pablito:pass1234 -a admin:s3cret -o access.log
+```
+
+En otra terminal:
+
+```sh
+# OK: el proxy resuelve el FQDN porque se usa socks5h
 curl -x socks5h://pablito:pass1234@127.0.0.1:1080 https://example.com/
 
-# destino IP literal: curl resuelve localmente y el proxy recibe la dirección
-curl -x socks5://pablito:pass1234@127.0.0.1:1080 http://93.184.215.14/
+# OK: curl resuelve localmente y el proxy recibe una dirección IP
+curl -x socks5://pablito:pass1234@127.0.0.1:1080 https://example.com/
+
+# management: métricas, usuarios, configuración y log
+./bin/client -a admin:s3cret
 ```
+
+Desde el cliente smcp se pueden ir cambiando la configuración de usuarios y probar conectarse con otros usuarios o sin autenticación en caso de haberlos borrado a todos.
 
 Y los caminos de error, junto con su efecto observable:
 
@@ -517,11 +494,10 @@ curl -x socks5h://pablito:pass1234@127.0.0.1:1080 http://127.0.0.1:9/
 tail -1 access.log
 ```
 
-El servicio SMCP se ejercita con el cliente provisto (`./bin/client -a admin:s3cret`) o manualmente con `nc 127.0.0.1 8080`. Para verificar la configuración en caliente: `SET conn_timeout 5`, abrir una conexión por el proxy, dejarla inactiva y observar que el reaper la cierra al superar ese tiempo de inactividad (con la granularidad del barrido periódico, que corre a lo sumo cada 10 segundos).
 
 ### 7.3. Pruebas de estrés
 
-Las pruebas de estrés (`stress/`, documentada en `docs/stress-testing.md`) es una prueba de integración que levanta el servidor real entre un generador de carga y un echo server locales, y contrasta lo transferido con las métricas reportadas por SMCP. Generador y backend usan `poll(2)` para que el límite medido sea el del servidor y no el de las herramientas. Ejecuta cuatro escenarios:
+Las pruebas de estrés (`stress/`, documentada en `docs/stress-testing.md`) son una prueba de integración que levanta el servidor real entre un generador de carga y un echo server locales, y contrasta lo transferido con las métricas reportadas por SMCP. Generador y backend usan `poll(2)` para que el límite medido sea el del servidor y no el de las herramientas. Ejecuta cuatro escenarios:
 
 - Capacidad: establece 500 túneles autenticados simultáneos, valida 1 KiB distinto por túnel y los sostiene 10 segundos, contrastando con `METRICS`.
 - Máximo observado: busca el techo real de conexiones simultáneas por incrementos hasta el primer fallo.
@@ -644,7 +620,7 @@ El cliente presenta un menú interactivo (métricas, usuarios, configuración, l
 
 ## 11. Documento de diseño del proyecto
 
-El servidor está construido sobre un modelo orientado a eventos, no bloqueante y de un solo hilo. Toda la entrada/salida de red se multiplexa con un selector propio basado en `pselect(2)`, y cada conexión se modela como una máquina de estados independiente que avanza a medida que el selector le entrega eventos de lectura y escritura. La única excepción al hilo único es un pool acotado de hilos para la resolución DNS, que evita que un `getaddrinfo(3)` bloqueante frene al resto de las conexiones.
+El servidor está construido sobre un modelo orientado a eventos, no bloqueante y de un solo hilo. Toda la entrada/salida de red se multiplexa con un selector basado en `pselect(2)`, y cada conexión se modela como una máquina de estados independiente que avanza a medida que el selector le entrega eventos de lectura y escritura. La única excepción al hilo único es un pool acotado de hilos para la resolución DNS, que evita que un `getaddrinfo(3)` bloqueante frene al resto de las conexiones.
 
 El código se organiza separando lo genérico y reutilizable (`src/shared/`) de la lógica específica del protocolo (`src/server/`) y del cliente de administración (`src/client/`):
 
@@ -655,6 +631,17 @@ src/server/   handler SOCKS5, negociación, auth, request, relay,
               pool DNS, protocolo de management (SMCP) y estado runtime
 src/client/   cliente CLI de monitoreo y configuración
 ```
+
+Origen del código. Los siguientes módulos de `src/shared/` fueron provistos por la cátedra como código base —tanto su implementación (`.c`) como su cabecera (`.h`)—. Se describen en las subsecciones siguientes para dar un panorama completo de la arquitectura y de cómo el resto del sistema se apoya en ellos, pero no constituyen desarrollo propio del grupo:
+
+- `selector.c` / `selector.h` - multiplexor de E/S (Sección 11.1)
+- `stm.c` / `stm.h` - motor de máquinas de estados (Sección 11.2)
+- `buffer.c` / `buffer.h` - buffer de E/S (Sección 11.3)
+- `parser.c` / `parser.h` - parser genérico (Sección 11.8)
+- `parser_utils.c` / `parser_utils.h` - parsers (Sección 11.8)
+- `netutils.c` / `netutils.h` - utilidades de red (Sección 11.8)
+
+Sus pruebas unitarias correspondientes (`*_test.c`) también provienen del código base. Todo el resto del código es trabajo original del grupo: el handler SOCKS5 y sus fases (negociación, autenticación, request, resolución y relay), el protocolo de management SMCP, el pool de resolución DNS, el estado runtime (usuarios, configuración, métricas y registro de accesos) y el cliente de administración.
 
 A grandes rasgos, el proceso servidor levanta dos sockets pasivos dentro del mismo `main()` y el mismo event loop: uno para el proxy SOCKS5 y otro para el servicio de management. Ambos se registran en el selector con un handler de accept propio, de modo que cada conexión entrante instancia una máquina de estados distinta según el socket por el que llegó:
 
@@ -689,7 +676,7 @@ typedef struct fd_handler {
 } fd_handler;
 ```
 
-Dos decisiones de diseño importantes:
+Dos aspectos clave de su diseño:
 
 - Los handlers no deben bloquearse, porque demorarían al resto de los descriptores. Cuando una tarea sí requiere bloquearse (la resolución DNS), se descarga en otro hilo y luego se avisa al selector con `selector_notify_block`. Esa notificación usa una señal (`SIGALRM`, configurada en `selector_init`), y el resultado se presenta a los handlers como un evento `handle_block` durante la iteración normal, sin que el handler tenga que preocuparse por la concurrencia.
 - El bloqueo con `pselect` tiene un timeout (10 s), lo que le da al loop principal oportunidad de ejecutar tareas periódicas —como cerrar conexiones inactivas— aunque no haya tráfico.
@@ -737,13 +724,13 @@ Cada conexión SOCKS5 es una instancia de máquina de estados. Los estados refle
 
 ```c
 enum socks5_state {
-    NEG_READ,       /* negociación de métodos (parseo)          */
-    NEG_WRITE,      /* respuesta de método (2 bytes)            */
-    AUTH_READ,      /* credenciales user/pass (RFC 1929)        */
-    AUTH_WRITE,     /* respuesta de auth (2 bytes)              */
+    NEG_READ,       /* negociación de métodos (parseo)         */
+    NEG_WRITE,      /* respuesta de método (2 bytes)           */
+    AUTH_READ,      /* credenciales user/pass (RFC 1929)       */
+    AUTH_WRITE,     /* respuesta de auth (2 bytes)             */
     REQ_READ,       /* parseo del request                      */
     REQ_RESOLVE,    /* esperando resolución DNS (hilo aparte)  */
-    REQ_CONNECTING, /* connect() no bloqueante en vuelo        */
+    REQ_CONNECTING, /* connect()                               */
     REQ_WRITE,      /* respuesta del request                   */
     RELAY,          /* relay full-duplex cliente ↔ origen      */
     DONE, ERROR,    /* estados terminales                      */
@@ -806,7 +793,7 @@ socks5_set_config(&config);
 mgmt_set_deps(&mgmt_deps);   /* users, metrics, config, access_log, admin */
 ```
 
-Este diseño mantiene los módulos desacoplados y testeables sin red: las métricas y el registro se actualizan siempre desde el hilo del selector, por lo que no requieren locks ni atómicos.
+Este diseño mantiene los módulos desacoplados y testeables sin red: las métricas y el registro se actualizan siempre desde el hilo del selector, por lo que no requieren sincronizacion.
 
 ### 11.7. Implementación del servicio de management
 
@@ -821,7 +808,7 @@ El servidor expone, en el mismo proceso y event loop pero en otro socket pasivo,
 - Utilidades de red (`netutils.c`): helpers de sockets y direcciones.
 - Argumentos (`args.c`): parseo de las opciones de línea de comandos.
 - Cliente CLI (`src/client/`, `smcp_client.c`): habla SMCP para monitorear y configurar el servidor desde la línea de comandos.
-- Pruebas unitarias (`test/`): batería con el framework Check, una por módulo.
+- Pruebas unitarias (`test/`): tests con el framework Check, una por módulo.
 
 ---
 
@@ -829,5 +816,4 @@ El servidor expone, en el mismo proceso y event loop pero en otro socket pasivo,
 
 - RFC 1928 — SOCKS Protocol Version 5.
 - RFC 1929 — Username/Password Authentication for SOCKS V5. 
-
 
